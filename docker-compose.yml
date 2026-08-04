@@ -1,0 +1,27 @@
+services:
+  reclaimarr:
+    build: .
+    container_name: reclaimarr
+    restart: unless-stopped
+    ports:
+      - "8585:8585"
+    env_file:
+      - .env
+    volumes:
+      - ./data:/data
+      # IMPORTANT — change the left side of the line below to wherever your
+      # movie library actually lives on THIS machine. It must be the exact
+      # same path your Radarr already uses internally (check a movie's file
+      # path in Radarr's UI) — Reclaimarr matches files by path, so if this
+      # doesn't line up, nothing will work.
+      #
+      # Examples:
+      #   - /mnt/media/Movies:/media2       (a mounted NAS share)
+      #   - /home/you/Movies:/media2        (a local folder)
+      - /path/to/your/movies:/media2
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8585/health')"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s

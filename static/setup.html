@@ -1,0 +1,450 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Reclaimarr Setup</title>
+<link rel="icon" href="/favicon.svg" type="image/svg+xml" />
+<style>
+  :root {
+    --bg: #101010;
+    --bg-elevated: #181818;
+    --bg-elevated-2: #1e1e1e;
+    --border: #2a2a2a;
+    --text: #ececec;
+    --text-muted: #96969b;
+    --gold: #d4af37;
+    --gold-bright: #e8c65a;
+    --gold-dim: #8a723098;
+    --red: #e05555;
+    --green: #4caf50;
+  }
+  * { box-sizing: border-box; }
+  html { color-scheme: dark; }
+  body {
+    margin: 0;
+    min-height: 100vh;
+    background: radial-gradient(ellipse at top, #1a1a1a 0%, #0c0c0c 60%);
+    color: var(--text);
+    font-family: "Inter", -apple-system, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+    font-size: 15px;
+    line-height: 1.55;
+    display: flex;
+    justify-content: center;
+    padding: 3rem 1.25rem;
+  }
+  .wrap { width: 100%; max-width: 620px; }
+  .brand { display: flex; align-items: center; justify-content: center; gap: 0.75rem; margin-bottom: 0.5rem; }
+  .brand-mark {
+    display: inline-flex; align-items: center; justify-content: center;
+    width: 2.75rem; height: 2.75rem; border-radius: 999px;
+    background: linear-gradient(160deg, var(--gold-bright), var(--gold));
+    color: #101010; font-weight: 800; font-size: 1.3rem;
+  }
+  .brand-name { font-size: 1.6rem; font-weight: 700; letter-spacing: 0.02em; }
+  .tagline { text-align: center; color: var(--text-muted); margin: 0 0 2rem; }
+
+  .steps { display: flex; justify-content: center; gap: 0.4rem; margin-bottom: 2rem; flex-wrap: wrap; }
+  .step-dot {
+    display: flex; align-items: center; gap: 0.4rem; padding: 0.3rem 0.7rem;
+    border-radius: 999px; font-size: 0.78rem; color: var(--text-muted);
+    background: var(--bg-elevated); border: 1px solid var(--border);
+  }
+  .step-dot.active { color: #101010; background: var(--gold); border-color: var(--gold); font-weight: 600; }
+  .step-dot.done { color: var(--gold); border-color: var(--gold-dim); }
+
+  .card {
+    background: var(--bg-elevated);
+    border: 1px solid var(--border);
+    border-radius: 14px;
+    padding: 2rem;
+    box-shadow: 0 20px 60px rgba(0,0,0,0.4);
+  }
+  .card h2 { margin: 0 0 0.35rem; font-size: 1.25rem; }
+  .card > p.sub { margin: 0 0 1.5rem; color: var(--text-muted); font-size: 0.9rem; }
+
+  label { display: block; font-size: 0.82rem; color: var(--text-muted); margin: 1rem 0 0.35rem; }
+  label:first-of-type { margin-top: 0; }
+  input[type="text"], input[type="password"], input[type="url"], select {
+    width: 100%; padding: 0.65rem 0.75rem; border-radius: 8px;
+    border: 1px solid var(--border); background: var(--bg-elevated-2); color: var(--text);
+    font-size: 0.92rem;
+  }
+  input:focus, select:focus { outline: 2px solid var(--gold); outline-offset: 1px; }
+
+  details.help { margin-top: 0.6rem; }
+  details.help summary {
+    cursor: pointer; color: var(--gold); font-size: 0.82rem; user-select: none;
+  }
+  details.help[open] summary { margin-bottom: 0.5rem; }
+  details.help .help-body {
+    background: var(--bg-elevated-2); border: 1px solid var(--border); border-radius: 8px;
+    padding: 0.75rem 0.9rem; font-size: 0.83rem; color: var(--text-muted);
+  }
+  details.help ol { margin: 0.3rem 0 0; padding-left: 1.2rem; }
+  details.help li { margin-bottom: 0.3rem; }
+  details.help code { background: #000; padding: 0.1rem 0.35rem; border-radius: 4px; color: var(--gold-bright); }
+
+  .actions { display: flex; justify-content: space-between; align-items: center; margin-top: 1.75rem; gap: 0.75rem; }
+  .btn {
+    border: none; border-radius: 8px; padding: 0.65rem 1.3rem; font-weight: 600;
+    font-size: 0.9rem; cursor: pointer; transition: transform 0.1s ease, opacity 0.15s ease;
+  }
+  .btn:active { transform: scale(0.98); }
+  .btn:disabled { opacity: 0.5; cursor: not-allowed; }
+  .btn-gold { background: linear-gradient(160deg, var(--gold-bright), var(--gold)); color: #101010; }
+  .btn-ghost { background: transparent; color: var(--text-muted); border: 1px solid var(--border); }
+  .btn-ghost:hover { color: var(--text); border-color: #444; }
+
+  .result { margin-top: 0.9rem; font-size: 0.85rem; padding: 0.6rem 0.8rem; border-radius: 8px; display: none; }
+  .result.ok { display: block; background: rgba(76,175,80,0.12); color: var(--green); border: 1px solid rgba(76,175,80,0.35); }
+  .result.err { display: block; background: rgba(224,85,85,0.12); color: var(--red); border: 1px solid rgba(224,85,85,0.35); }
+
+  .profile-picks { margin-top: 1.1rem; padding-top: 1.1rem; border-top: 1px dashed var(--border); display: none; }
+  .profile-picks.show { display: block; }
+
+  .field-hint { font-size: 0.78rem; color: var(--text-muted); margin-top: 0.3rem; }
+  .optional-badge { font-size: 0.7rem; color: var(--text-muted); border: 1px solid var(--border); border-radius: 999px; padding: 0.05rem 0.5rem; margin-left: 0.4rem; }
+
+  .summary-row { display: flex; justify-content: space-between; padding: 0.5rem 0; border-bottom: 1px solid var(--border); font-size: 0.88rem; }
+  .summary-row:last-child { border-bottom: none; }
+  .summary-row .ok-tag { color: var(--green); }
+  .summary-row .skip-tag { color: var(--text-muted); }
+
+  .step { display: none; }
+  .step.active { display: block; }
+
+  .already-done { text-align: center; padding: 2rem 0; }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <div class="brand">
+    <span class="brand-mark">R</span>
+    <span class="brand-name">Reclaimarr</span>
+  </div>
+  <p class="tagline">First-time setup — takes about two minutes.</p>
+
+  <div class="steps" id="stepper"></div>
+
+  <div class="card">
+
+    <div id="already-configured" class="already-done" style="display:none;">
+      <h2>This instance is already set up</h2>
+      <p class="sub">Head to the app and log in with the credentials already configured.</p>
+      <a class="btn btn-gold" href="/" style="display:inline-block; text-decoration:none;">Go to Reclaimarr</a>
+    </div>
+
+    <div id="steps-container" style="display:none;">
+
+      <!-- Step 1: Admin login -->
+      <section class="step" data-step="1">
+        <h2>Create your login</h2>
+        <p class="sub">This is the username and password you'll use to open Reclaimarr from now on. Pick something only you know — this app can rename and delete media files.</p>
+        <label for="admin-username">Username</label>
+        <input type="text" id="admin-username" autocomplete="username" value="admin" />
+        <label for="admin-password">Password</label>
+        <input type="password" id="admin-password" autocomplete="new-password" placeholder="At least 8 characters" />
+        <label for="admin-password-confirm">Confirm password</label>
+        <input type="password" id="admin-password-confirm" autocomplete="new-password" />
+        <div class="result" id="result-1"></div>
+        <div class="actions">
+          <span></span>
+          <button class="btn btn-gold" id="btn-1-next">Continue</button>
+        </div>
+      </section>
+
+      <!-- Step 2: Plex -->
+      <section class="step" data-step="2">
+        <h2>Connect Plex</h2>
+        <p class="sub">Reclaimarr watches what's playing so it can offer a 4K upgrade mid-stream.</p>
+        <label for="plex-url">Plex server URL</label>
+        <input type="url" id="plex-url" placeholder="http://192.168.1.50:32400" />
+        <div class="field-hint">Use your server's real LAN IP, not "localhost" — Reclaimarr runs in its own container.</div>
+        <label for="plex-token">Plex token</label>
+        <input type="text" id="plex-token" placeholder="X-Plex-Token" />
+        <details class="help">
+          <summary>How do I find my Plex token?</summary>
+          <div class="help-body">
+            <ol>
+              <li>Open the Plex Web App and start playing any movie or show.</li>
+              <li>Click the <strong>⋯</strong> (more) menu on the player and choose <strong>Get Info</strong>.</li>
+              <li>In the panel that opens, click <strong>View XML</strong> in the bottom-left corner.</li>
+              <li>A new tab opens — look at its address bar for <code>X-Plex-Token=...</code>. Everything after the <code>=</code> is your token.</li>
+            </ol>
+          </div>
+        </details>
+        <div class="result" id="result-2"></div>
+        <div class="actions">
+          <button class="btn btn-ghost" data-back="1">Back</button>
+          <button class="btn btn-gold" id="btn-2-next">Test &amp; Continue</button>
+        </div>
+      </section>
+
+      <!-- Step 3: Radarr -->
+      <section class="step" data-step="3">
+        <h2>Connect Radarr</h2>
+        <p class="sub">Reclaimarr uses Radarr to search for and grab replacement files.</p>
+        <label for="radarr-url">Radarr URL</label>
+        <input type="url" id="radarr-url" placeholder="http://192.168.1.50:7878" />
+        <label for="radarr-key">Radarr API key</label>
+        <input type="text" id="radarr-key" placeholder="API key" />
+        <details class="help">
+          <summary>Where do I find my Radarr API key?</summary>
+          <div class="help-body">
+            In Radarr, go to <strong>Settings</strong> (left sidebar) → <strong>General</strong> → the <strong>Security</strong> section near the bottom. Your API key is shown there with a copy button.
+          </div>
+        </details>
+        <div class="result" id="result-3"></div>
+
+        <div class="profile-picks" id="radarr-profiles">
+          <label for="profile-4k">Which quality profile is your 4K / UHD profile?</label>
+          <select id="profile-4k"></select>
+          <label for="profile-1080p">Which profile should downgraded movies use? (a smaller, non-4K profile)</label>
+          <select id="profile-1080p"></select>
+          <div class="field-hint">Don't have dedicated profiles for this yet? You can leave these and set them up later in Radarr, then update them from Reclaimarr's Settings page.</div>
+        </div>
+
+        <div class="actions">
+          <button class="btn btn-ghost" data-back="2">Back</button>
+          <button class="btn btn-gold" id="btn-3-next">Test &amp; Continue</button>
+        </div>
+      </section>
+
+      <!-- Step 4: Optional integrations -->
+      <section class="step" data-step="4">
+        <h2>Optional extras <span class="optional-badge">skip anytime</span></h2>
+        <p class="sub">Both of these can be added later from Settings if you'd rather skip them now.</p>
+
+        <label for="tautulli-url">Tautulli URL</label>
+        <input type="url" id="tautulli-url" placeholder="http://192.168.1.50:8181" />
+        <label for="tautulli-key">Tautulli API key</label>
+        <input type="text" id="tautulli-key" placeholder="API key" />
+        <details class="help">
+          <summary>Where do I find my Tautulli API key?</summary>
+          <div class="help-body">
+            In Tautulli, go to <strong>Settings</strong> → <strong>Web Interface</strong> → scroll to the <strong>API</strong> section and make sure it's enabled. Your API key is shown there.
+          </div>
+        </details>
+
+        <label for="discord-webhook">Discord webhook URL</label>
+        <input type="text" id="discord-webhook" placeholder="https://discord.com/api/webhooks/..." />
+        <details class="help">
+          <summary>How do I get a Discord webhook URL?</summary>
+          <div class="help-body">
+            In Discord: <strong>Server Settings</strong> → <strong>Integrations</strong> → <strong>Webhooks</strong> → <strong>New Webhook</strong> → pick a channel → <strong>Copy Webhook URL</strong>.
+          </div>
+        </details>
+        <div class="result" id="result-4"></div>
+        <div class="actions">
+          <button class="btn btn-ghost" data-back="3">Back</button>
+          <button class="btn btn-gold" id="btn-4-next">Continue</button>
+        </div>
+      </section>
+
+      <!-- Step 5: Done -->
+      <section class="step" data-step="5">
+        <h2>All set!</h2>
+        <p class="sub">Here's what's configured. You can change any of this later from Settings.</p>
+        <div id="summary"></div>
+        <div class="actions">
+          <span></span>
+          <button class="btn btn-gold" id="btn-finish">Go to Reclaimarr</button>
+        </div>
+      </section>
+
+    </div>
+  </div>
+</div>
+
+<script>
+  const STEP_LABELS = ["Login", "Plex", "Radarr", "Extras", "Done"];
+  let currentStep = 1;
+  let authToken = null;
+  const state = { plex_url: "", radarr_url: "", tautulli_url: "", discord_webhook_url: "" };
+
+  function $(sel) { return document.querySelector(sel); }
+
+  function renderStepper() {
+    const el = $("#stepper");
+    el.innerHTML = "";
+    STEP_LABELS.forEach((label, i) => {
+      const n = i + 1;
+      const dot = document.createElement("span");
+      dot.className = "step-dot" + (n === currentStep ? " active" : n < currentStep ? " done" : "");
+      dot.textContent = (n < currentStep ? "✓ " : n + ". ") + label;
+      el.appendChild(dot);
+    });
+  }
+
+  function goToStep(n) {
+    currentStep = n;
+    document.querySelectorAll(".step").forEach((s) => s.classList.toggle("active", Number(s.dataset.step) === n));
+    renderStepper();
+  }
+
+  document.querySelectorAll("[data-back]").forEach((btn) => {
+    btn.addEventListener("click", () => goToStep(Number(btn.dataset.back)));
+  });
+
+  async function api(path, { method = "GET", body, auth = true } = {}) {
+    const headers = { "Content-Type": "application/json" };
+    if (auth && authToken) headers["Authorization"] = "Basic " + authToken;
+    const res = await fetch(path, { method, headers, body: body !== undefined ? JSON.stringify(body) : undefined });
+    let data = null;
+    try { data = await res.json(); } catch (e) { /* no body */ }
+    if (!res.ok) throw new Error((data && data.detail) || res.statusText || "Request failed");
+    return data;
+  }
+
+  function showResult(stepN, ok, message) {
+    const el = $("#result-" + stepN);
+    el.className = "result " + (ok ? "ok" : "err");
+    el.textContent = message;
+  }
+
+  function setBusy(btn, busy, label) {
+    btn.disabled = busy;
+    btn.dataset.label = btn.dataset.label || btn.textContent;
+    btn.textContent = busy ? "Working…" : btn.dataset.label;
+  }
+
+  // ---- Step 1: admin login ----
+  $("#btn-1-next").addEventListener("click", async () => {
+    const btn = $("#btn-1-next");
+    const username = $("#admin-username").value.trim();
+    const password = $("#admin-password").value;
+    const confirm = $("#admin-password-confirm").value;
+    if (!username || password.length < 8) {
+      showResult(1, false, "Username is required and password must be at least 8 characters.");
+      return;
+    }
+    if (password !== confirm) {
+      showResult(1, false, "Passwords don't match.");
+      return;
+    }
+    setBusy(btn, true);
+    try {
+      await api("/api/setup/admin", { method: "POST", auth: false, body: { username, password } });
+      authToken = btoa(username + ":" + password);
+      showResult(1, true, "Login created.");
+      goToStep(2);
+    } catch (e) {
+      showResult(1, false, e.message);
+    } finally {
+      setBusy(btn, false);
+    }
+  });
+
+  // ---- Step 2: Plex ----
+  $("#btn-2-next").addEventListener("click", async () => {
+    const btn = $("#btn-2-next");
+    const url = $("#plex-url").value.trim().replace(/\/$/, "");
+    const token = $("#plex-token").value.trim();
+    if (!url || !token) { showResult(2, false, "Both fields are required."); return; }
+    setBusy(btn, true);
+    try {
+      const res = await api("/api/setup/test-plex", { method: "POST", body: { url, token } });
+      showResult(2, true, `Connected — found ${res.movie_libraries.length ? res.movie_libraries.join(", ") : res.library_count + " libraries"}.`);
+      await api("/api/connections", { method: "POST", body: { plex_url: url, plex_token: token } });
+      state.plex_url = url;
+      setTimeout(() => goToStep(3), 600);
+    } catch (e) {
+      showResult(2, false, e.message);
+    } finally {
+      setBusy(btn, false);
+    }
+  });
+
+  // ---- Step 3: Radarr ----
+  $("#btn-3-next").addEventListener("click", async () => {
+    const btn = $("#btn-3-next");
+    const url = $("#radarr-url").value.trim().replace(/\/$/, "");
+    const apiKey = $("#radarr-key").value.trim();
+    if (!url || !apiKey) { showResult(3, false, "Both fields are required."); return; }
+    setBusy(btn, true);
+    try {
+      if (!$("#radarr-profiles").classList.contains("show")) {
+        // First click: test + populate profile pickers, don't advance yet.
+        const res = await api("/api/setup/test-radarr", { method: "POST", body: { url, api_key: apiKey } });
+        const opts = res.quality_profiles.map((p) => `<option value="${p.id}">${p.name}</option>`).join("");
+        $("#profile-4k").innerHTML = opts;
+        $("#profile-1080p").innerHTML = opts;
+        $("#radarr-profiles").classList.add("show");
+        showResult(3, true, `Connected — Radarr v${res.version}. Pick your profiles below, then continue.`);
+      } else {
+        // Second click: actually save and advance.
+        await api("/api/connections", { method: "POST", body: { radarr_url: url, radarr_api_key: apiKey } });
+        await api("/api/settings", {
+          method: "POST",
+          body: {
+            radarr_4k_profile_id: Number($("#profile-4k").value),
+            radarr_1080p_profile_id: Number($("#profile-1080p").value),
+          },
+        });
+        state.radarr_url = url;
+        goToStep(4);
+      }
+    } catch (e) {
+      showResult(3, false, e.message);
+    } finally {
+      setBusy(btn, false);
+    }
+  });
+
+  // ---- Step 4: optional ----
+  $("#btn-4-next").addEventListener("click", async () => {
+    const btn = $("#btn-4-next");
+    const tautulliUrl = $("#tautulli-url").value.trim().replace(/\/$/, "");
+    const tautulliKey = $("#tautulli-key").value.trim();
+    const discordWebhook = $("#discord-webhook").value.trim();
+    setBusy(btn, true);
+    try {
+      if (tautulliUrl && tautulliKey) {
+        await api("/api/setup/test-tautulli", { method: "POST", body: { url: tautulliUrl, api_key: tautulliKey } });
+        state.tautulli_url = tautulliUrl;
+      }
+      const update = {};
+      if (tautulliUrl) update.tautulli_url = tautulliUrl;
+      if (tautulliKey) update.tautulli_api_key = tautulliKey;
+      if (discordWebhook) { update.discord_webhook_url = discordWebhook; state.discord_webhook_url = discordWebhook; }
+      if (Object.keys(update).length) await api("/api/connections", { method: "POST", body: update });
+      buildSummary();
+      goToStep(5);
+    } catch (e) {
+      showResult(4, false, "Couldn't verify Tautulli: " + e.message + " — fix it or leave these blank and continue later.");
+    } finally {
+      setBusy(btn, false);
+    }
+  });
+
+  function buildSummary() {
+    const rows = [
+      ["Admin login", true],
+      ["Plex — " + state.plex_url, true],
+      ["Radarr — " + state.radarr_url, true],
+      ["Tautulli", !!state.tautulli_url],
+      ["Discord notifications", !!state.discord_webhook_url],
+    ];
+    $("#summary").innerHTML = rows
+      .map(([label, ok]) => `<div class="summary-row"><span>${label}</span><span class="${ok ? "ok-tag" : "skip-tag"}">${ok ? "✓ configured" : "skipped"}</span></div>`)
+      .join("");
+  }
+
+  $("#btn-finish").addEventListener("click", () => { window.location.href = "/"; });
+
+  // ---- Boot ----
+  (async () => {
+    try {
+      const status = await api("/api/setup/status", { auth: false });
+      if (status.setup_complete) {
+        $("#already-configured").style.display = "block";
+        return;
+      }
+    } catch (e) { /* fall through to showing the wizard anyway */ }
+    $("#steps-container").style.display = "block";
+    goToStep(1);
+  })();
+</script>
+</body>
+</html>
