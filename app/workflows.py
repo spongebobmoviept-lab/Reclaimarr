@@ -15,16 +15,16 @@ from .logger import log
 # in a row. {title} is filled in; the practical bit (restart, original safe)
 # is appended separately so it stays consistent and dynamic (keep_original_days).
 _UPGRADE_PUN_LINES = [
-    "{title} just got a serious pixel boost.",
-    "Ctrl+Alt+4K: {title} has been upgraded.",
-    "{title} went from good to 4K-ing amazing.",
-    "Resolution revolution: {title} is in 4K now.",
-    "We gave {title} a glow-up nobody asked for.",
-    "{title}: now in 4K. No cap(tion) needed.",
-    "Breaking news: {title} achieves pixel enlightenment.",
-    "{title} leveled up — achievement unlocked: 4K Vision.",
-    "Say cheese: {title} just got framed... in 4K.",
-    "{title} is now suspiciously crystal clear. 4K clear.",
+    "Hey! We upgraded {title} to 4K while you weren't looking.",
+    "Good news: we just upgraded {title} to 4K.",
+    "Surprise! {title} is now in glorious 4K.",
+    "Heads up — {title} just got bumped up to 4K.",
+    "We saw you enjoying {title}, so we upgraded it to 4K.",
+    "{title} just leveled up: 4K unlocked.",
+    "Ding! Your movie got an upgrade — {title} is now in 4K.",
+    "{title} got the royal treatment: 4K, delivered.",
+    "Plot twist: we upgraded {title} to 4K mid-watch.",
+    "{title} is now 4K. You're welcome.",
 ]
 
 def _job_is_stalled(job) -> bool:
@@ -175,7 +175,11 @@ async def try_process_session_for_upgrade(session: plex.PlexSession) -> str:
     """
     if session.media_type != "movie":
         return "not a movie"
-    if session.resolution in ("2160", "4k"):
+    if session.resolution.lower() in ("2160", "4k"):
+        # Confirmed live (Cars): Plex doesn't consistently lowercase this —
+        # an exact-match check here let an already-4K session get re-claimed
+        # for another pointless upgrade the moment resolution came back as
+        # "4K" instead of "4k".
         return "already 4K"
     if settings.plex_allowed_usernames and session.username not in settings.plex_allowed_usernames:
         return "user not in allowed list"
@@ -235,29 +239,20 @@ async def _claim_and_start_upgrade(movie: radarr.RadarrMovie, plex_rating_key: s
 
     await log(f"upgrade: claiming job for {movie.title} — searching for 4K")
 
+    # Deliberately NOT moving the original file here. Confirmed live: an
+    # upgrade job is claimed precisely because someone is watching THIS
+    # exact file RIGHT NOW — moving it out from under an active Plex stream
+    # (even to a safe vault path) can error/lock up the player long before
+    # the 4K replacement is anywhere near ready, which defeats the entire
+    # "watch normally, then get a clean handoff" point of this feature. The
+    # move now happens in _preserve_upgrade_original_if_needed, called only
+    # once the download is actually finished and about to be imported — the
+    # same moment we're about to interrupt them anyway.
     old_file_path = (movie.raw.get("movieFile") or {}).get("path")
     if old_file_path and preserve.KEEP_SUFFIX in os.path.basename(old_file_path):
-        # Radarr is tracking an already-kept-suffixed file as this movie's
-        # real file — a broken leftover state (confirmed live on Pawn
-        # Sacrifice) where keep_in_place would silently no-op instead of
-        # protecting anything. Bail out rather than risk it.
         await log(f"upgrade: {movie.title}'s tracked file is already suffixed as a kept original ('{old_file_path}') — needs manual cleanup before it's safe to upgrade, aborting")
         await store.release(movie.id)
         return "tracked file has a broken kept-suffix name — needs manual cleanup first"
-    if old_file_path:
-        kept_path = await preserve.keep_in_place(old_file_path)
-        if kept_path is None:
-            await log(f"upgrade: could not preserve the original file for {movie.title} — aborting rather than risk it")
-            await store.release(movie.id)
-            return "failed to preserve original file, aborted before touching anything"
-        await store.update(movie.id, preserved_path=kept_path, original_file_path=old_file_path)
-        await store.record_preserved_file(kept_path, "upgrade", movie.id, old_file_path)
-        # Deliberately NOT triggering a Radarr rescan here — confirmed live
-        # that it makes Radarr re-adopt the renamed file as its tracked
-        # movieFile (matching by folder/size), which would put it right back
-        # at risk of deletion on the next import. Not needed anyway: the
-        # explicit release grab below works regardless of Radarr's current
-        # file-tracking state (also confirmed live, separately).
 
     if await radarr.queue_has_movie(movie.id):
         await log(f"upgrade: {movie.title} already has a Radarr queue entry — adopting it instead of re-grabbing")
@@ -390,6 +385,40 @@ async def _dedupe_queue(movie_id: int) -> Optional[dict]:
     return keep
 
 
+async def _preserve_upgrade_original_if_needed(movie_id: int) -> None:
+    """Move the original file out of Radarr's visible path — but only now,
+    right before the 4K download is actually imported, not back when the
+    job was first claimed.
+
+    Confirmed live: moving it at claim time meant an actively-playing
+    stream lost its underlying file the moment a search started, minutes
+    before the 4K replacement was anywhere near ready — locking up
+    playback instead of the intended "watch normally, then get a clean
+    handoff" experience. This still has to happen before Radarr's own
+    import runs (same reasoning as ever: Radarr's own cleanup can destroy a
+    renamed-in-place original), just as late as it safely can. Idempotent —
+    no-ops if already done, since this gets called on every poll cycle
+    while the download looks finished.
+    """
+    job = await store.get(movie_id)
+    if job is None or job.preserved_path:
+        return
+    movie = await radarr.get_movie(movie_id)
+    old_file_path = (movie.raw.get("movieFile") or {}).get("path")
+    if not old_file_path:
+        return
+    if preserve.KEEP_SUFFIX in os.path.basename(old_file_path):
+        await log(f"upgrade: {movie.title}'s tracked file is already suffixed as a kept original ('{old_file_path}') — needs manual cleanup, leaving it in place")
+        return
+    kept_path = await preserve.keep_in_place(old_file_path)
+    if kept_path is None:
+        await log(f"upgrade: could not preserve the original file for {movie.title} before import — leaving it in place, import may be blocked until this is resolved manually")
+        return
+    await store.update(movie_id, preserved_path=kept_path, original_file_path=old_file_path)
+    await store.record_preserved_file(kept_path, "upgrade", movie_id, old_file_path)
+    await log(f"upgrade: {movie.title}'s 4K download is ready to import — moving the original out of the way now")
+
+
 async def _nudge_import_if_ready(movie_id: int, queue_record: Optional[dict]) -> None:
     """Force Radarr to import right now if the download looks finished.
 
@@ -430,6 +459,11 @@ async def _monitor_download(movie_id: int) -> None:
                 await _give_up(movie_id, f"stalled — no result after {settings.max_job_duration_hours}h, likely a dead download")
                 return
             queue_record = await _dedupe_queue(movie_id)
+            if queue_record:
+                sizeleft = queue_record.get("sizeleft", 0) or 0
+                status = str(queue_record.get("status", "")).lower()
+                if sizeleft == 0 or status == "completed":
+                    await _preserve_upgrade_original_if_needed(movie_id)
             await _nudge_import_if_ready(movie_id, queue_record)
 
             if queue_record and _download_too_slow(queue_record):
@@ -510,7 +544,7 @@ async def _finish_upgrade(movie_id: int) -> None:
         await log(f"upgrade: import reported for {movie.title} but Plex hasn't confirmed a 4K version yet — waiting")
         await asyncio.sleep(settings.download_monitor_interval_seconds)
 
-    await log(f"upgrade: {movie.title} confirmed available in 4K in Plex — notifying via a clean stop (both versions are safe, nothing was deleted)")
+    await log(f"upgrade: {movie.title} confirmed available in 4K in Plex")
     if job.plex_added_at:
         try:
             await plex.restore_added_at(job.plex_rating_key, job.plex_added_at)
@@ -521,8 +555,19 @@ async def _finish_upgrade(movie_id: int) -> None:
     message = (
         f"{pun} Restart to watch it — your original's untouched for {settings.keep_original_days}d."
     )
-    for session in await plex.sessions_for_rating_key(job.plex_rating_key):
-        await plex.terminate_session(session.machine_identifier, message)
+    # Matching by title, not job.plex_rating_key — confirmed live (Ron's Gone
+    # Wrong) that a key captured even moments earlier can already be wrong
+    # again by now under heavy rating-key churn, silently sending nobody the
+    # notification while still logging as if it worked. Title stays stable
+    # through all of that, and this loop only logs success for sessions it
+    # actually found and terminated.
+    notified_sessions = await plex.sessions_for_title(movie.title)
+    if notified_sessions:
+        for session in notified_sessions:
+            await plex.terminate_session(session.machine_identifier, message)
+        await log(f"upgrade: notified {len(notified_sessions)} active session(s) for {movie.title} via a clean stop (both versions are safe, nothing was deleted)")
+    else:
+        await log(f"upgrade: {movie.title} — no active Plex session found to notify (viewer may have already stopped watching)")
 
     if job.original_quality_profile_id:
         await radarr.set_quality_profile(movie_id, job.original_quality_profile_id)

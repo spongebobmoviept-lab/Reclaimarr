@@ -321,6 +321,18 @@ async def sessions_for_rating_key(rating_key: str) -> list[PlexSession]:
     return [s for s in sessions if s.rating_key == rating_key]
 
 
+async def sessions_for_title(title: str) -> list[PlexSession]:
+    """More reliable than sessions_for_rating_key for a movie whose file has
+    just been swapped — confirmed live (Ron's Gone Wrong) that a rating key
+    can drift multiple times within a single minute under that churn, so a
+    key captured even moments ago can already be wrong by notify time.
+    Title is what actually stays stable throughout.
+    """
+    sessions = await list_sessions()
+    normalized = title.strip().lower()
+    return [s for s in sessions if s.media_type == "movie" and s.title.strip().lower() == normalized]
+
+
 @with_retry(label="Plex: find rating key by tmdb id")
 async def find_rating_key_by_title(title: str, tmdb_id: int) -> Optional[str]:
     """Resolve a Radarr movie to its Plex ratingKey when it's not currently playing.
