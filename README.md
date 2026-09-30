@@ -77,7 +77,7 @@ If Radarr has more than one movie root folder (say `/media2/Movies` and `/media4
 cp .env.example .env   # optional
 ```
 
-**3. Start it.** The container runs as uid/gid 1000 by default; `data/` and your movie folders must be writable by that user. If yours differ, put `PUID=` and `PGID=` (from `id -u` / `id -g`) in `.env`.
+**3. Start it.** The app runs as uid/gid 1000 (never root) and makes `data/` writable for itself; your movie folders must be writable by that user too. If yours belong to someone else, put `PUID=` and `PGID=` (from `id -u` / `id -g`) in `.env`.
 
 ```bash
 docker compose up -d
@@ -117,7 +117,7 @@ You shouldn't need these: the media folders, qBittorrent, Discord and integrity 
 
 | Variable | Default | What it does |
 |---|---|---|
-| `PUID`, `PGID` | `1000` | User the container runs as; must own `data/` and your movie folders. |
+| `PUID`, `PGID` | `1000` | User the app runs as; `data/` is handed to it on start, and it needs write access to your movie folders. |
 | `MEDIA_ROOTS` | `/media2` | Comma-separated container paths Reclaimarr may touch — the same paths Radarr uses. Each root gets its own `reclaimarr-vault` folder, so preserving a file is always a same-disk move. Must be absolute; `/` is rejected. |
 | `QBIT_URL`, `QBIT_USERNAME`, `QBIT_PASSWORD` | empty | Optional. When set, a 4K upgrade's torrent is force-started and moved to the top of qBittorrent's queue as soon as Radarr grabs it, then un-forced when the job ends. |
 | `QBIT_ACTIVE_HASHES_FILE` | empty (off) | Optional JSON file listing the torrent hashes Reclaimarr currently force-starts, for another queue-management script to read and leave alone. Mount a *folder* for it (see `docker-compose.yml`). |
@@ -190,7 +190,7 @@ Yes — the "who can trigger 4K upgrades" setting lets you restrict it to specif
 - On a fresh install, the setup wizard's "create admin" step is open until an admin exists. Finish setup right after the first start, or set `AUTH_PASSWORD` in `.env`.
 - The Plex token, API keys and the Discord webhook URL are redacted from log output. They are stored in `data/` — keep that folder private.
 - The "Test connection" buttons make requests to whatever URL you type; they require the admin login.
-- The container runs as a non-root user (uid 1000). That user needs write access to your media roots.
+- The app runs as a non-root user (`PUID`, default 1000), which needs write access to your media folders. The entrypoint starts as root only to hand `data/` to that user, then drops privileges; set `user:` in compose to skip even that.
 
 ## Design principles
 

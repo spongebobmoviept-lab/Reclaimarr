@@ -1,5 +1,10 @@
 # Changelog
 
+## 1.2.1 — 2026-09-30
+
+### Fixed
+- A fresh `./data` folder created by Docker (owned by root) no longer stops the app: the image's entrypoint hands `/data` to `PUID:PGID` (default 1000) and then drops root before starting the app. Compose passes `PUID`/`PGID` instead of `user:`.
+
 ## 1.2.0 — 2026-09-30
 
 ### Added
