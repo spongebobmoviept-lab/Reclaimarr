@@ -198,3 +198,7 @@ Yes — the "who can trigger 4K upgrades" setting lets you restrict it to specif
 - Never deletes anything until the replacement is confirmed working.
 - Restart-safe — if the container restarts mid-job, it re-checks reality against Radarr/Plex before resuming or safely reverting, never guesses.
 - Everything Reclaimarr does is visible: the Log, History, and Jobs tabs exist specifically so this never feels like a black box.
+
+## License
+
+MIT, see [LICENSE](LICENSE).
