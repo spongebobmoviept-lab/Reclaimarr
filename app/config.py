@@ -1,5 +1,7 @@
 import os
 
+APP_VERSION = "1.1.0"
+
 
 def _env_int(name: str, default: int) -> int:
     return int(os.environ.get(name, default))
@@ -7,6 +9,32 @@ def _env_int(name: str, default: int) -> int:
 
 def _env_float(name: str, default: float) -> float:
     return float(os.environ.get(name, default))
+
+
+def _env_bool(name: str, default: bool) -> bool:
+    raw = os.environ.get(name)
+    if raw is None:
+        return default
+    return raw.strip().lower() in ("1", "true", "yes")
+
+
+def _normalize_media_roots(raw: str) -> list[str]:
+    """Parse MEDIA_ROOTS (comma-separated container paths) into a clean list.
+
+    Every root must be an absolute path and must not be "/" itself -- a root
+    of "/" would make every path on the container "allowed", defeating the
+    whole point of the guard in preserve.py. Invalid entries are dropped.
+    """
+    roots: list[str] = []
+    for part in raw.split(","):
+        part = part.strip()
+        if not part or not part.startswith("/"):
+            continue
+        norm = os.path.normpath(part)
+        if norm in ("/", "//") or norm in roots:
+            continue
+        roots.append(norm)
+    return roots
 
 
 class Settings:
@@ -21,6 +49,28 @@ class Settings:
 
         self.radarr_url = os.environ.get("RADARR_URL", "")
         self.radarr_api_key = os.environ.get("RADARR_API_KEY", "")
+
+        # Optional: force-start + top-priority an upgrade's download directly
+        # in qBittorrent the moment its torrent hash is known, so a 4K grab
+        # for something being watched right now doesn't wait behind the
+        # normal queue -- see app/qbittorrent.py. Empty QBIT_URL skips the
+        # priority boost entirely; the upgrade itself works either way.
+        self.qbit_url = os.environ.get("QBIT_URL", "").strip().rstrip("/")
+        self.qbit_username = os.environ.get("QBIT_USERNAME", "admin")
+        self.qbit_password = os.environ.get("QBIT_PASSWORD", "")
+        # Optional coordination file for an external qBittorrent queue
+        # manager/optimizer script: Reclaimarr writes the hashes it has
+        # force-started here as JSON ({"<hash>": {"movie_id": .., "since": ..}})
+        # so that other tool can leave them alone. Empty (the default) turns
+        # the file off completely.
+        self.qbit_active_hashes_file = os.environ.get("QBIT_ACTIVE_HASHES_FILE", "").strip()
+
+        # Container paths Reclaimarr is allowed to rename/move/delete files
+        # under -- normally the same path(s) Radarr uses for its movie root
+        # folders. Comma-separated; each root gets its own safety vault
+        # (<root>/reclaimarr-vault) so preserving a file is always a same-
+        # filesystem rename. Anything outside these roots is never touched.
+        self.media_roots = _normalize_media_roots(os.environ.get("MEDIA_ROOTS", "/media2"))
 
         self.tautulli_url = os.environ.get("TAUTULLI_URL", "")
         self.tautulli_api_key = os.environ.get("TAUTULLI_API_KEY", "")
@@ -55,6 +105,11 @@ class Settings:
         self.downgrade_scan_delay_seconds = _env_float("DOWNGRADE_SCAN_DELAY_SECONDS", 3)
         self.downgrade_max_concurrent = _env_int("DOWNGRADE_MAX_CONCURRENT", 3)
         self.upgrade_retry_cooldown_minutes = _env_int("UPGRADE_RETRY_COOLDOWN_MINUTES", 30)
+        # Much longer than the normal retry cooldown above — a brand-new
+        # release with no 4K version on any indexer yet isn't going to
+        # suddenly appear within the next 30 minutes, so there's no point
+        # burning another multi-minute indexer search that often for it.
+        self.upgrade_no_release_cooldown_hours = _env_int("UPGRADE_NO_RELEASE_COOLDOWN_HOURS", 12)
         self.max_job_duration_hours = _env_float("MAX_JOB_DURATION_HOURS", 6)
 
         # A dead/near-dead torrent can otherwise sit occupying a concurrency
@@ -64,17 +119,23 @@ class Settings:
         self.min_download_speed_kbps = _env_float("MIN_DOWNLOAD_SPEED_KBPS", 500)
         # Periodic safety net, independent of the upgrade/downgrade
         # workflows: catches any movie Radarr thinks has a file that doesn't
-        # actually exist on disk (exactly the state Elvis and Rain Man were
-        # left in after Radarr's own background process deleted their
-        # originals), or anything genuinely missing, and searches for a
+        # actually exist on disk (e.g. after Radarr's own background cleanup
+        # removed an original), or anything genuinely missing, and searches for a
         # replacement. Runs regardless of ENABLE_UPGRADE_WORKFLOW/
         # ENABLE_DOWNGRADE_WORKFLOW since it never renames or deletes
         # anything — it only ever searches.
         self.library_integrity_check_interval_hours = _env_float("LIBRARY_INTEGRITY_CHECK_INTERVAL_HOURS", 6)
+        # If one integrity pass finds more missing files than this, it assumes
+        # the library mount isn't up (e.g. right after a reboot) rather than
+        # mass data loss, and skips acting for that pass.
+        self.integrity_sanity_limit = _env_int("INTEGRITY_SANITY_LIMIT", 8)
+        # Wait this long after startup before the first integrity pass, so
+        # network mounts and dependent services have time to come up.
+        self.integrity_startup_delay_seconds = _env_int("INTEGRITY_STARTUP_DELAY_SECONDS", 180)
 
         # A "smallest file that clears a 1-seeder minimum" pick is exactly
         # how you end up grabbing near-dead torrents — confirmed live
-        # tonight repeatedly. Raising this floor trades a little size for
+        # repeatedly in practice. Raising this floor trades a little size for
         # actually finishing in a reasonable time.
         self.min_release_seeders = _env_int("MIN_RELEASE_SEEDERS", 10)
         # Grace period before speed is judged at all — a fresh torrent often
@@ -106,6 +167,14 @@ class Settings:
         # Tautulli, if the user wants Reclaimarr's own events posted there too.
         # Empty means notifications are silently skipped.
         self.discord_webhook_url = os.environ.get("DISCORD_WEBHOOK_URL", "").strip()
+        # Hour (UTC) the once-a-day Discord summary posts at. Independent of
+        # DOWNGRADE_SCAN_HOUR_UTC — the digest still runs (reporting a quiet
+        # day) even with the downgrade workflow disabled.
+        self.digest_hour_utc = _env_int("DIGEST_HOUR_UTC", 13)
+        # Display name the Discord webhook posts under.
+        self.discord_username = os.environ.get("DISCORD_USERNAME", "Reclaimarr").strip() or "Reclaimarr"
+        # Post a short "Reclaimarr Online" notice each time the app starts.
+        self.discord_startup_notice = _env_bool("DISCORD_STARTUP_NOTICE", False)
 
         # Independent of DRY_RUN: when true, terminate_session is always a
         # no-op/log-only, even with dry_run off. Lets you test a real Radarr

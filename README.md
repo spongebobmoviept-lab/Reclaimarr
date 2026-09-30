@@ -68,13 +68,23 @@ cd Reclaimarr
 
 to wherever your movie library actually lives on this machine — it needs to be the **same path Radarr itself uses** (check a movie's file path inside Radarr's UI if you're not sure).
 
-**2. Start it:**
+If Radarr has more than one movie root folder (say `/media2/Movies` and `/media4/Movies`), mount each one and list them in `MEDIA_ROOTS` (next step). Reclaimarr never renames, moves, or deletes anything outside those roots.
+
+**2. Create your `.env`:**
 
 ```bash
-docker-compose up -d
+cp .env.example .env
 ```
 
-**3. Open `http://<this-machine's-ip>:8585`** and follow the setup wizard:
+The defaults are fine for most setups. Edit it only if you use more than one media root (`MEDIA_ROOTS=/media2,/media4`) or want the optional qBittorrent boost.
+
+**3. Start it:**
+
+```bash
+docker compose up -d
+```
+
+**4. Open `http://<this-machine's-ip>:8585`** and follow the setup wizard:
 
 1. Create your login (username + password)
 2. Connect Plex — the wizard tells you exactly where to find your Plex token
@@ -100,6 +110,45 @@ Everything below is set through the setup wizard or the in-app Settings page —
 | Max 4K release size | 80 GB | Upgrade grabs won't exceed this |
 | Allowed users for upgrades | everyone | Restrict who can trigger a 4K upgrade by watching |
 
+### Environment settings (`.env`)
+
+A few infrastructure settings live in `.env` instead of the UI. All are optional; see `.env.example`.
+
+| Variable | Default | What it does |
+|---|---|---|
+| `MEDIA_ROOTS` | `/media2` | Comma-separated container paths Reclaimarr may touch — the same paths Radarr uses. Each root gets its own `reclaimarr-vault` folder, so preserving a file is always a same-disk move. Must be absolute; `/` is rejected. |
+| `QBIT_URL`, `QBIT_USERNAME`, `QBIT_PASSWORD` | empty | Optional. When set, a 4K upgrade's torrent is force-started and moved to the top of qBittorrent's queue as soon as Radarr grabs it, then un-forced when the job ends. |
+| `QBIT_ACTIVE_HASHES_FILE` | empty (off) | Optional JSON file listing the torrent hashes Reclaimarr currently force-starts, for another queue-management script to read and leave alone. Mount a *folder* for it (see `docker-compose.yml`). |
+| `UPGRADE_RETRY_COOLDOWN_MINUTES` | `30` | Minimum time between upgrade attempts for the same movie. |
+| `UPGRADE_NO_RELEASE_COOLDOWN_HOURS` | `12` | Longer cooldown when the last search found no 4K release at all (e.g. a same-week release). |
+| `DIGEST_HOUR_UTC` | `13` | Hour (UTC) the daily Discord digest posts. |
+| `DISCORD_USERNAME` | `Reclaimarr` | Name the Discord webhook posts under. |
+| `DISCORD_STARTUP_NOTICE` | `false` | Post a short "online" notice on every start. |
+| `LIBRARY_INTEGRITY_CHECK_INTERVAL_HOURS` | `6` | How often the library-integrity check runs. |
+| `INTEGRITY_SANITY_LIMIT` | `8` | If one pass finds more missing files than this, it assumes the mount is down and does nothing that pass. |
+| `INTEGRITY_STARTUP_DELAY_SECONDS` | `180` | Wait after startup before the first integrity pass, so mounts can come up. |
+
+## Discord notifications
+
+With a webhook configured, Reclaimarr posts rich embeds for: 4K upgrade ready (with size), no 4K available, space reclaimed, downgrade failed, duplicate grabs cleaned up, stalled download retried, library integrity fixes (one message per sweep), and integrity checks skipped because the mount looked down. Every embed carries an all-time stats footer, and a **daily digest** summarises the last 24 hours at `DIGEST_HOUR_UTC`.
+
+## API for other tools
+
+Every `/api/*` route uses the same HTTP Basic admin login as the web UI.
+
+- `POST /api/movies/{radarr_movie_id}/pause-upgrade` with `{"minutes": 240}` (1–1440) — keeps that movie from starting a 4K upgrade for a while, so a shared viewing isn't interrupted by a mid-movie swap. [Servarr](https://github.com/spongebobmoviept-lab/Servarr)'s Movie Night calls this before it announces a movie. The pause is in memory only and clears on restart.
+
+## Helper script
+
+`scripts/test_unwatched_downgrade.py` picks the N biggest movies with no Tautulli watch history and asks Reclaimarr to run a real downgrade on each, 2 seconds apart. It is configured with environment variables (see the top of the file). It starts real jobs, so try it with `DRY_RUN=true` first.
+
+## Running the tests
+
+```bash
+docker build -t reclaimarr .
+docker run --rm -v "$PWD/tests:/app/tests:ro" -w /app reclaimarr python -m unittest discover -s tests -t .
+```
+
 ## FAQ
 
 **Will this delete my only copy of a movie?**
@@ -119,11 +168,20 @@ Yes — the "who can trigger 4K upgrades" setting lets you restrict it to specif
 
 ## Troubleshooting
 
-- **The container won't start / crashes immediately.** Check `docker-compose logs -f reclaimarr` — the most common cause is the media volume path in `docker-compose.yml` not existing on the host.
+- **The container won't start / crashes immediately.** Check `docker compose logs -f reclaimarr` — the most common causes are a missing `.env` (run `cp .env.example .env`) or the media volume path in `docker-compose.yml` not existing on the host.
+- **Files are never preserved/moved ("REFUSING ... outside all allowed media roots" in the Log).** `MEDIA_ROOTS` doesn't match the container paths Radarr reports. Make them identical.
 - **The wizard's "Test Connection" fails for Plex or Radarr.** Double check the URL includes `http://` and the correct port, and that it's reachable *from inside the container* — `localhost` almost never works here, use the machine's real LAN IP.
 - **Nothing seems to be happening.** Check the in-app Log tab first — every decision (including *why* a movie was skipped) is logged there.
 - **Something looks stuck.** The Jobs tab shows every in-flight action with its current status; a job can be safely cancelled from there without touching any files.
 - **Found a bug or want a feature?** Open an issue on this repo.
+
+## Security notes
+
+- The web UI and API use HTTP Basic auth over plain HTTP. Keep Reclaimarr on your LAN, or put it behind a reverse proxy with HTTPS. Failed logins are throttled per IP.
+- On a fresh install, the setup wizard's "create admin" step is open until an admin exists. Finish setup right after the first start, or set `AUTH_PASSWORD` in `.env`.
+- The Plex token, API keys and the Discord webhook URL are redacted from log output. They are stored in `data/` — keep that folder private.
+- The "Test connection" buttons make requests to whatever URL you type; they require the admin login.
+- The container runs as a non-root user (uid 1000). That user needs write access to your media roots.
 
 ## Design principles
 

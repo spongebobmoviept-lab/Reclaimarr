@@ -7,7 +7,7 @@ from .config import settings
 PLAIN_KEYS = ["plex_url", "radarr_url", "tautulli_url"]
 # Secret fields: never returned in full — masked on read, only overwritten
 # when the caller actually sends a new (non-empty) value. discord_webhook_url
-# is a bearer-style URL (confirmed during tonight's security review — anyone
+# is a bearer-style URL (anyone
 # with it can post to the channel), so it's treated as a secret too.
 SECRET_KEYS = ["plex_token", "radarr_api_key", "tautulli_api_key", "discord_webhook_url"]
 

@@ -72,6 +72,26 @@ def _download_too_slow(queue_record: dict) -> bool:
 # full UPGRADE_SEARCH_TIMEOUT_SECONDS before trying a manual release search.
 _force_events: dict[int, asyncio.Event] = {}
 
+# Movie-night support (Servarr calls this before announcing the night's
+# pick) — a temporary, in-memory-only pause so nobody's shared viewing gets
+# interrupted by a surprise mid-movie 4K swap. Never persisted; a restart
+# clears it, which is fine since it's only ever meant to cover one evening.
+_upgrade_paused_until: dict[int, datetime.datetime] = {}
+
+
+def pause_upgrade_for(movie_id: int, minutes: int) -> None:
+    _upgrade_paused_until[movie_id] = datetime.datetime.now(datetime.timezone.utc) + datetime.timedelta(minutes=minutes)
+
+
+def _is_upgrade_paused(movie_id: int) -> bool:
+    until = _upgrade_paused_until.get(movie_id)
+    if until is None:
+        return False
+    if datetime.datetime.now(datetime.timezone.utc) >= until:
+        del _upgrade_paused_until[movie_id]
+        return False
+    return True
+
 
 def request_force_check(movie_id: int) -> bool:
     event = _force_events.get(movie_id)
@@ -113,7 +133,7 @@ async def _pick_release(
     downgrade — no profile setting changes that, since it just means "this
     movie already has something at least this good"). Confirmed live: this
     is exactly why downgrade releases that Radarr calls "rejected" still grab
-    and download successfully when done explicitly (proven on Pawn Sacrifice)
+    and download successfully when done explicitly
     — Radarr's automatic search opinion doesn't apply to our own picked
     release. min_seeders replaces the real protection "rejected" used to
     provide (skip dead torrents) with an explicit check we control ourselves.
@@ -176,7 +196,7 @@ async def try_process_session_for_upgrade(session: plex.PlexSession) -> str:
     if session.media_type != "movie":
         return "not a movie"
     if session.resolution.lower() in ("2160", "4k"):
-        # Confirmed live (Cars): Plex doesn't consistently lowercase this —
+        # Plex doesn't consistently lowercase this —
         # an exact-match check here let an already-4K session get re-claimed
         # for another pointless upgrade the moment resolution came back as
         # "4K" instead of "4k".
@@ -190,6 +210,9 @@ async def try_process_session_for_upgrade(session: plex.PlexSession) -> str:
     movie = await radarr.find_movie_by_tmdb_id(tmdb_id)
     if movie is None:
         return "movie not found in Radarr"
+
+    if _is_upgrade_paused(movie.id):
+        return "upgrade temporarily paused (movie night)"
 
     if not await store.should_check_upgrade(movie.id):
         return "recently attempted, cooling down before retrying automatically"
@@ -325,8 +348,8 @@ async def _manual_grab_4k(movie_id: int) -> bool:
     # Still excludes actual disc images (iso/bd-disk/dvdr) since those
     # aren't directly playable files. Still bounded by max_4k_release_size_gb.
     #
-    # ignore_rejected=True for the same reason as downgrade: confirmed live
-    # on 2012 that every single 2160p candidate — a plainly obvious upgrade
+    # ignore_rejected=True for the same reason as downgrade: in practice
+    # every single 2160p candidate — a plainly obvious upgrade
     # from an existing 480p file — came back "rejected" with reason
     # "Existing file and the Quality profile does not allow upgrades".
     # That's Radarr's own automatic-search opinion (based on its still-stale
@@ -346,7 +369,7 @@ async def _manual_grab_4k(movie_id: int) -> bool:
         )
     if release is None:
         available = sorted({r.resolution for r in releases if r.resolution} or {"none"})
-        await _give_up(movie_id, f"no 4K release found — only {', '.join(available)} available on your indexers")
+        await _give_up(movie_id, f"no 4K release found — only {', '.join(available)} available on your indexers", no_release_found=True)
         return False
 
     await radarr.grab_release(release.guid, release.indexer_id)
@@ -382,6 +405,16 @@ async def _dedupe_queue(movie_id: int) -> Optional[dict]:
     )
     for extra in extras:
         await radarr.remove_queue_item(extra["id"])
+
+    # Only fetched on the rare path where duplicates actually exist — the
+    # common case (one queue entry) never pays this extra API call.
+    movie = await radarr.get_movie(movie_id)
+    job = await store.get(movie_id)
+    await store.record_history(
+        movie_id, movie.title, job.kind if job else "upgrade", "duplicate_removed",
+        f"Kept '{keep.get('title')}', removed {len(extras)} duplicate download(s).", movie.poster_url,
+    )
+    await discord.duplicate_removed(movie.title, keep.get("title", "?"), len(extras), movie.poster_url)
     return keep
 
 
@@ -460,6 +493,13 @@ async def _monitor_download(movie_id: int) -> None:
                 return
             queue_record = await _dedupe_queue(movie_id)
             if queue_record:
+                # First loop where the real download is known -- force-start
+                # + top-priority it directly in qBittorrent (if configured),
+                # since someone is waiting on this one. set_qbit_hash() is a
+                # no-op on every later call once job.qbit_hash is already set.
+                dl_id = queue_record.get("downloadId")
+                if dl_id:
+                    await store.set_qbit_hash(movie_id, dl_id)
                 sizeleft = queue_record.get("sizeleft", 0) or 0
                 status = str(queue_record.get("status", "")).lower()
                 if sizeleft == 0 or status == "completed":
@@ -475,6 +515,9 @@ async def _monitor_download(movie_id: int) -> None:
                 await radarr.remove_queue_item(queue_record["id"], remove_from_client=True)
                 if not await _manual_grab_4k(movie_id):
                     return
+                movie = await radarr.get_movie(movie_id)
+                await store.record_history(movie_id, movie.title, "upgrade", "stalled_retry", "Stalled download abandoned — retried with a different release.", movie.poster_url)
+                await discord.download_stalled_retry(movie.title, "upgrade", movie.poster_url)
             else:
                 event = await radarr.new_history_event_type(movie_id, job.history_baseline_id)
                 if event == "downloadFolderImported":
@@ -499,7 +542,7 @@ async def _finish_upgrade(movie_id: int) -> None:
     # Plex its best shot at matching the new file to the SAME existing
     # library entry (by folder/filename, its most reliable signal) instead
     # of ever treating it as a disconnected new movie with no resume
-    # position. Confirmed live (2012, repeatedly) that relying only on a
+    # position. In practice, relying only on a
     # specific item's rating key isn't reliable enough on its own for this.
     try:
         await plex.refresh_movies_section()
@@ -555,17 +598,31 @@ async def _finish_upgrade(movie_id: int) -> None:
     message = (
         f"{pun} Restart to watch it — your original's untouched for {settings.keep_original_days}d."
     )
-    # Matching by title, not job.plex_rating_key — confirmed live (Ron's Gone
-    # Wrong) that a key captured even moments earlier can already be wrong
+    # Matching by title, not job.plex_rating_key — in practice a
+    # key captured even moments earlier can already be wrong
     # again by now under heavy rating-key churn, silently sending nobody the
     # notification while still logging as if it worked. Title stays stable
     # through all of that, and this loop only logs success for sessions it
     # actually found and terminated.
     notified_sessions = await plex.sessions_for_title(movie.title)
     if notified_sessions:
+        notified_count = 0
         for session in notified_sessions:
-            await plex.terminate_session(session.machine_identifier, message)
-        await log(f"upgrade: notified {len(notified_sessions)} active session(s) for {movie.title} via a clean stop (both versions are safe, nothing was deleted)")
+            try:
+                await plex.terminate_session(session.machine_identifier, message)
+                notified_count += 1
+            except Exception as exc:  # noqa: BLE001
+                # Confirmed live: the session can go stale in the moment
+                # between being found and actually being terminated. This
+                # must never propagate — it would crash the whole
+                # finish-upgrade flow (skipping the addedAt restore, the
+                # "done" status update, everything below) over a single
+                # notification that was already a lost cause anyway.
+                await log(f"upgrade: found a session for {movie.title} but couldn't stop it (likely already ended/changed): {exc}")
+        if notified_count:
+            await log(f"upgrade: notified {notified_count} active session(s) for {movie.title} via a clean stop (both versions are safe, nothing was deleted)")
+        else:
+            await log(f"upgrade: {movie.title} — found a session but couldn't notify it in time (see above) — 4K is ready regardless")
     else:
         await log(f"upgrade: {movie.title} — no active Plex session found to notify (viewer may have already stopped watching)")
 
@@ -584,10 +641,10 @@ async def _finish_upgrade(movie_id: int) -> None:
         f"Now available in 4K ({size_gb:.1f} GB). Original kept permanently; 4K reverts after {settings.keep_original_days} days.",
         movie.poster_url,
     )
-    await discord.upgrade_ready(movie.title, movie.poster_url, pun)
+    await discord.upgrade_ready(movie.title, movie.poster_url, pun, size_gb=size_gb)
 
 
-async def _give_up(movie_id: int, reason: str) -> None:
+async def _give_up(movie_id: int, reason: str, no_release_found: bool = False) -> None:
     job = await store.get(movie_id)
     if job is None:
         return
@@ -606,7 +663,7 @@ async def _give_up(movie_id: int, reason: str) -> None:
         await log(f"upgrade: giving up on {movie.title} but couldn't auto-restore the original — leaving it for manual review")
     await store.update(movie_id, status="failed")
     await store.release(movie_id)
-    await store.record_upgrade_check(movie_id)
+    await store.record_upgrade_check(movie_id, no_release_found=no_release_found)
     await store.record_history(movie_id, movie.title, "upgrade", "failed", reason, movie.poster_url)
     await discord.upgrade_unavailable(movie.title, reason, movie.poster_url)
 
@@ -658,6 +715,26 @@ async def downgrade_daily_loop() -> None:
             await _downgrade_scan_once()
         except Exception as exc:  # noqa: BLE001
             await log(f"downgrade loop: unexpected error: {exc}")
+
+
+async def daily_digest_loop() -> None:
+    """Workflow 3: once a day, post a Discord summary of everything that
+    happened in the last 24h. Independent of ENABLE_UPGRADE_WORKFLOW/
+    ENABLE_DOWNGRADE_WORKFLOW — a digest is still useful (if quiet) with
+    either workflow off, and independent of DISCORD_WEBHOOK_URL being set at
+    all, since discord._send already no-ops cleanly when it isn't.
+    """
+    while True:
+        now = datetime.datetime.now(datetime.timezone.utc)
+        target = now.replace(hour=settings.digest_hour_utc, minute=0, second=0, microsecond=0)
+        if target <= now:
+            target += datetime.timedelta(days=1)
+        await asyncio.sleep((target - now).total_seconds())
+
+        try:
+            await discord.daily_digest(store.recent_stats(hours=24))
+        except Exception as exc:  # noqa: BLE001
+            await log(f"digest loop: unexpected error: {exc}")
 
 
 _downgrade_semaphore: Optional[asyncio.Semaphore] = None
@@ -885,7 +962,7 @@ async def _downgrade_scan_candidates(
         # release-picking work — _pick_downgrade_release ignores Radarr's
         # "rejected" flag entirely now, since that flag will always say
         # "existing file meets cutoff" for a deliberate downgrade regardless
-        # of profile. Confirmed live on Casino and Fight Club: real, good
+        # of profile. In practice, real, good
         # candidates were being thrown away by trusting that flag.
         await radarr.set_quality_profile(movie.id, settings.radarr_1080p_profile_id)
         releases = await radarr.get_releases(movie.id)
@@ -909,8 +986,7 @@ async def _downgrade_scan_candidates(
         old_file_path = (movie.raw.get("movieFile") or {}).get("path")
         if old_file_path and preserve.KEEP_SUFFIX in os.path.basename(old_file_path):
             # Radarr is tracking an already-kept-suffixed file as this movie's
-            # real file — a leftover broken state (confirmed live on Pawn
-            # Sacrifice) where keep_in_place would silently no-op instead of
+            # real file — a leftover broken state where keep_in_place would silently no-op instead of
             # actually protecting anything, since it refuses to double-rename.
             # Bail out rather than risk Radarr's own import cleanup deleting
             # what it thinks is just "the old file" but is actually the only copy.
@@ -936,7 +1012,7 @@ async def _downgrade_scan_candidates(
         try:
             await radarr.grab_release(release.guid, release.indexer_id)
         except Exception as exc:  # noqa: BLE001
-            # Confirmed live (Anchorman 2): a grab can fail for reasons that
+            # A grab can fail for reasons that
             # have nothing to do with the release itself (a transient
             # Radarr/indexer 404) — and by this point the original has
             # already been moved out of Radarr's library. Without this,
@@ -989,12 +1065,20 @@ async def preserve_cleanup_loop() -> None:
 async def library_integrity_loop() -> None:
     """Periodic safety net, independent of the upgrade/downgrade workflows
     and their on/off switches: finds any movie Radarr thinks has a file that
-    doesn't actually exist on disk (the exact state Elvis and Rain Man were
+    doesn't actually exist on disk (e.g. the state a movie is
     left in after Radarr's own background process deleted their originals
     out from under an in-progress job), or anything genuinely missing, and
     triggers a normal search for it. Never renames, deletes, or preserves
     anything — just makes sure nothing silently stays broken.
     """
+    # Right after a host reboot, a first pass can run before the library's
+    # network mount has come back up, so os.path.exists() returns False for
+    # the entire library at once. The sanity check
+    # inside _library_integrity_check_once is the real defense (it holds
+    # regardless of timing), but there's no reason to even try this fast
+    # after a fresh start — give mounts and dependent services a real
+    # chance to settle first.
+    await asyncio.sleep(settings.integrity_startup_delay_seconds)
     while True:
         try:
             await _library_integrity_check_once()
@@ -1030,6 +1114,13 @@ async def _library_integrity_check_once() -> None:
         movie = await radarr.get_movie(movie_id)
         file_path = (movie.raw.get("movieFile") or {}).get("path", "")
         phantom = bool(movie.has_file and file_path and not os.path.exists(file_path))
+        if phantom:
+            # A mount that isn't up yet looks identical to a genuinely
+            # deleted file from here. Double-check after a real pause, not
+            # just a couple seconds — a remount after a host reboot can
+            # take a while, longer than a token retry would cover.
+            await asyncio.sleep(30)
+            phantom = not os.path.exists(file_path)
         really_missing = not movie.has_file
         if really_missing or phantom:
             problems.append((movie, phantom))
@@ -1037,22 +1128,43 @@ async def _library_integrity_check_once() -> None:
     if not problems:
         return
 
+    # A handful of genuinely broken files is plausible. Dozens at once
+    # (e.g. a whole library right after a host reboot) means the
+    # library mount itself isn't actually reachable, not that this many
+    # files vanished simultaneously — grabbing replacements for all of them
+    # would hammer the indexers and needlessly downgrade a huge swath of
+    # the library. Bail out and flag it instead of acting.
+    if len(problems) > settings.integrity_sanity_limit:
+        await log(
+            f"integrity check: found {len(problems)} movies with no file — way more than expected, "
+            "almost certainly the library mount isn't up rather than mass data loss. Skipping action this pass."
+        )
+        await discord.integrity_check_suspicious(len(problems))
+        return
+
     await log(f"integrity check: found {len(problems)} movie(s) with no real file on disk — searching for small replacements")
+    fixed: list[tuple[str, str]] = []
     for movie, phantom in problems:
         reason = "Radarr's record points at a file that no longer exists on disk" if phantom else "no file at all"
         await log(f"integrity check: '{movie.title}' — {reason} — searching for a small replacement")
         if phantom:
             await radarr.rescan_movie(movie.id)
         grabbed = await _grab_small_replacement(movie)
-        if not grabbed:
+        if grabbed:
+            await store.record_history(movie.id, movie.title, "downgrade", "integrity_fixed", reason, movie.poster_url)
+            fixed.append((movie.title, reason))
+        else:
             await log(f"integrity check: no small release found for {movie.title} — leaving it missing rather than grabbing something huge; check manually")
         await asyncio.sleep(settings.downgrade_scan_delay_seconds)
+
+    if fixed:
+        await discord.integrity_fixed_batch(fixed)
 
 
 async def _grab_small_replacement(movie: radarr.RadarrMovie) -> bool:
     """Used only by the integrity check to restore a missing file.
 
-    Confirmed live (13 Hours, 21 Bridges): a plain Radarr auto-search here
+    A plain Radarr auto-search here
     grabs whatever the quality profile considers "best" — which for a movie
     this check is fixing (i.e. one Reclaimarr already managed, almost always
     via a downgrade) silently re-acquires it huge again, undoing the
@@ -1085,7 +1197,7 @@ async def _find_movie_for_kept_path(kept_path: str) -> Optional[radarr.RadarrMov
     the move to the vault and the eventual re-import both still went through
     fine. Matches by folder name rather than full directory path since the
     kept file's vault directory is a sibling of the movie's own folder, not
-    the same path (see preserve.VAULT_ROOT).
+    the same path (see preserve.vault_roots()).
     """
     kept_folder_name = os.path.basename(os.path.dirname(kept_path))
     for movie in await radarr.list_movies():
@@ -1265,6 +1377,8 @@ async def _downgrade_job_monitor(movie_id: int, semaphore: asyncio.Semaphore) ->
                     await radarr.remove_queue_item(queue_record["id"], remove_from_client=True)
                     if not await _retry_downgrade_release(movie_id):
                         return
+                    await store.record_history(movie_id, movie.title, "downgrade", "stalled_retry", "Stalled download abandoned — retried with a different release.", movie.poster_url)
+                    await discord.download_stalled_retry(movie.title, "downgrade", movie.poster_url)
                 else:
                     event = await radarr.new_history_event_type(movie_id, job.history_baseline_id)
                     if event == "downloadFolderImported":
@@ -1349,9 +1463,9 @@ async def _restore_original(movie_id: int, job) -> bool:
     await store.forget_preserved_file(job.preserved_path)
     await radarr.rescan_movie(movie_id)
     if job.plex_rating_key:
-        # Best-effort only — confirmed live (Anchorman 2) that this refresh
-        # can 404 on the same stale-rating-key pattern as every other file
-        # swap tonight, and letting that escape here defeats the entire
+        # Best-effort only — this refresh
+        # can 404 on the same stale-rating-key pattern as any other file
+        # swap, and letting that escape here defeats the entire
         # point of _restore_original: the file revert above already
         # succeeded and is what actually matters, Plex noticing promptly is
         # just a nice-to-have. A caller mid-exception-recovery must not be
@@ -1485,6 +1599,7 @@ async def _finish_downgrade(movie_id: int, old_size: int) -> bool:
         await store.record_history(
             movie_id, movie.title, "downgrade", "done",
             f"{old_gb:.1f} GB → {new_gb:.1f} GB (saved {old_gb - new_gb:.1f} GB).", movie.poster_url,
+            gb_saved=old_gb - new_gb,
         )
         await discord.downgrade_done(movie.title, old_gb, new_gb, movie.poster_url)
 
@@ -1494,3 +1609,4 @@ async def _finish_downgrade(movie_id: int, old_size: int) -> bool:
     await store.update(movie_id, status="done")
     await store.release(movie_id)
     return True
+

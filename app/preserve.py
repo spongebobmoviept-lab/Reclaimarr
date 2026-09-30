@@ -1,26 +1,42 @@
 import os
 from typing import Optional
 
+from .config import settings
 from .logger import log
 
 KEEP_SUFFIX = "-reclaimarr-kept"
 
-# Movies live on the ten_tb share (/media2). four_tb (/media1) is TV shows —
-# not something Reclaimarr manages yet — and sits on a pool with disks that
-# already have real SMART errors, so it must never be renamed, deleted, or
-# even listed, regardless of what any single job's data claims a path is.
-# Update this (and the docker-compose mount) if/when TV show support is added.
-ALLOWED_MEDIA_ROOT = "/media2"
+# Only paths under one of the configured media roots (MEDIA_ROOTS, see
+# config.py) are ever renamed, moved, or deleted, regardless of what any
+# single job's data claims a path is. Anything else mounted into the
+# container (or not mounted at all) is left completely alone. Read live from
+# settings on every call so tests and future live-reload can change it.
+
+
+def allowed_media_roots() -> tuple[str, ...]:
+    return tuple(settings.media_roots)
+
 
 # Preserved originals get MOVED here, out of Radarr's scanned library
 # entirely — not just renamed in place within the movie's own folder.
-# Confirmed live (Elvis, Rain Man) that renaming alone isn't reliable
+# In practice, renaming alone isn't reliable
 # protection: Radarr has its own independent background process that can
 # rediscover a renamed file sitting in a movie's folder, re-adopt it as the
 # tracked movieFile, and delete it during a later import — regardless of
 # anything Reclaimarr itself does or doesn't trigger. A file Radarr's
 # library scan never even looks at can't be rediscovered this way.
-VAULT_ROOT = os.path.join(ALLOWED_MEDIA_ROOT, "reclaimarr-vault")
+#
+# One vault PER media root rather than a single shared one: two roots can
+# be genuinely different filesystems inside the container (e.g. a local
+# disk and a network share), and the preserve step below is an os.rename(),
+# which cannot cross a filesystem boundary (OSError: Invalid cross-device
+# link). Each vault lives under the same root as the files it protects so
+# the rename always stays on one device.
+VAULT_DIR_NAME = "reclaimarr-vault"
+
+
+def vault_roots() -> tuple[str, ...]:
+    return tuple(os.path.join(root, VAULT_DIR_NAME) for root in allowed_media_roots())
 
 
 def _is_within_root(path: str, root: str) -> bool:
@@ -29,21 +45,51 @@ def _is_within_root(path: str, root: str) -> bool:
     return real == real_root or real.startswith(real_root + os.sep)
 
 
+def _matching_root(path: str, roots: tuple) -> Optional[str]:
+    """The most specific of `roots` that contains `path`, or None if none
+    does (longest match wins, so nested roots resolve to the inner one)."""
+    matches = [root for root in roots if _is_within_root(path, root)]
+    if not matches:
+        return None
+    return max(matches, key=len)
+
+
 def _is_within_allowed_root(path: str) -> bool:
-    return _is_within_root(path, ALLOWED_MEDIA_ROOT)
+    return _matching_root(path, allowed_media_roots()) is not None
 
 
 def _is_within_vault(path: str) -> bool:
-    return _is_within_root(path, VAULT_ROOT)
+    return _matching_root(path, vault_roots()) is not None
+
+
+def _vault_root_for(source_path: str) -> Optional[str]:
+    """The vault that lives on the SAME filesystem as source_path, so the
+    eventual os.rename() into it can never cross a device boundary.
+    """
+    media_root = _matching_root(source_path, allowed_media_roots())
+    if media_root is None:
+        return None
+    return os.path.join(media_root, VAULT_DIR_NAME)
 
 
 def _vault_path(source_path: str) -> str:
-    """Same movie-folder name and filename, just rooted under VAULT_ROOT
-    instead of sitting inside the movie's own (Radarr-scanned) folder.
+    """Same movie-folder name and filename, just rooted under that source's
+    own vault (see _vault_root_for) instead of sitting inside the movie's
+    own (Radarr-scanned) folder.
     """
+    vault_root = _vault_root_for(source_path)
+    if vault_root is None:
+        # Callers (keep_in_place) are expected to have already checked
+        # _is_within_allowed_root before ever computing a vault path — this
+        # would be a programming error, not a runtime condition to handle
+        # quietly.
+        raise ValueError(
+            f"'{source_path}' is not under any allowed media root "
+            f"({', '.join(allowed_media_roots())}) — cannot compute a vault path for it"
+        )
     movie_folder = os.path.basename(os.path.dirname(source_path))
     base, ext = os.path.splitext(os.path.basename(source_path))
-    vault_dir = os.path.join(VAULT_ROOT, movie_folder)
+    vault_dir = os.path.join(vault_root, movie_folder)
     candidate = os.path.join(vault_dir, f"{base}{KEEP_SUFFIX}{ext}")
     counter = 1
     while os.path.exists(candidate):
@@ -68,7 +114,7 @@ async def keep_in_place(source_path: str) -> Optional[str]:
         return source_path
 
     if not source_path or not _is_within_allowed_root(source_path):
-        await log(f"keep-in-place: REFUSING — '{source_path}' is outside {ALLOWED_MEDIA_ROOT}, not touching it")
+        await log(f"keep-in-place: REFUSING — '{source_path}' is outside all allowed media roots ({', '.join(allowed_media_roots())}), not touching it")
         return None
 
     if not os.path.exists(source_path):
@@ -96,8 +142,10 @@ def list_kept_files() -> list[dict]:
     JobStore.preserved_since(path) for the real preservation timestamp.
     """
     results = []
-    if os.path.isdir(VAULT_ROOT):
-        for dirpath, _dirnames, filenames in os.walk(VAULT_ROOT):
+    for vault_root in vault_roots():
+        if not os.path.isdir(vault_root):
+            continue
+        for dirpath, _dirnames, filenames in os.walk(vault_root):
             for name in filenames:
                 path = os.path.join(dirpath, name)
                 results.append(
@@ -117,7 +165,7 @@ def delete_kept_file(path: str) -> bool:
     """
     real_path = os.path.realpath(path)
     if not _is_within_vault(real_path):
-        raise ValueError(f"Refusing to delete a path outside the vault ({VAULT_ROOT})")
+        raise ValueError(f"Refusing to delete a path outside the vault ({', '.join(vault_roots())})")
     if KEEP_SUFFIX not in os.path.basename(real_path):
         raise ValueError("Refusing to delete a file not marked as a Reclaimarr-kept original")
     if not os.path.isfile(real_path):
@@ -135,7 +183,7 @@ async def remove_no_gain_file(path: str, protected_path: str) -> bool:
     if not path or not os.path.exists(path):
         return False
     if not _is_within_allowed_root(path):
-        await log(f"remove-no-gain-file: REFUSING — '{path}' is outside {ALLOWED_MEDIA_ROOT}")
+        await log(f"remove-no-gain-file: REFUSING — '{path}' is outside all allowed media roots ({', '.join(allowed_media_roots())})")
         return False
     if path == protected_path:
         await log(f"remove-no-gain-file: REFUSING — '{path}' is the protected original, not a no-gain download")
@@ -156,13 +204,13 @@ async def revert_no_gain(kept_path: str, no_gain_path: str, original_path: str) 
     same-size copies sitting on disk defeats it.
     """
     if not _is_within_vault(kept_path):
-        await log(f"revert-no-gain: REFUSING — '{kept_path}' isn't in the vault ({VAULT_ROOT})")
+        await log(f"revert-no-gain: REFUSING — '{kept_path}' isn't in the vault ({', '.join(vault_roots())})")
         return False
     if not _is_within_allowed_root(original_path):
-        await log(f"revert-no-gain: REFUSING — '{original_path}' is outside {ALLOWED_MEDIA_ROOT}")
+        await log(f"revert-no-gain: REFUSING — '{original_path}' is outside all allowed media roots ({', '.join(allowed_media_roots())})")
         return False
     if no_gain_path and not _is_within_allowed_root(no_gain_path):
-        await log(f"revert-no-gain: REFUSING — '{no_gain_path}' is outside {ALLOWED_MEDIA_ROOT}")
+        await log(f"revert-no-gain: REFUSING — '{no_gain_path}' is outside all allowed media roots ({', '.join(allowed_media_roots())})")
         return False
     if KEEP_SUFFIX not in os.path.basename(kept_path):
         await log(f"revert-no-gain: REFUSING — '{kept_path}' isn't a Reclaimarr-kept original")

@@ -19,6 +19,17 @@ services:
       #   - /mnt/media/Movies:/media2       (a mounted NAS share)
       #   - /home/you/Movies:/media2        (a local folder)
       - /path/to/your/movies:/media2
+      #
+      # Movies spread over more than one root folder in Radarr? Mount each
+      # one at the same container path Radarr uses, and list them all in
+      # MEDIA_ROOTS in your .env (e.g. MEDIA_ROOTS=/media2,/media4). Each root
+      # gets its own reclaimarr-vault folder for preserved originals.
+      #   - /path/to/more/movies:/media4
+      #
+      # Optional: share a folder with another qBittorrent queue manager so it
+      # can see which torrents Reclaimarr force-started (set
+      # QBIT_ACTIVE_HASHES_FILE=/shared/qbit/reclaimarr_active_hashes.json).
+      #   - ./shared:/shared/qbit
     healthcheck:
       test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8585/health')"]
       interval: 30s

@@ -5,16 +5,58 @@ import os
 from dataclasses import asdict, dataclass, field
 from typing import Any, Literal, Optional
 
-from . import preserve, radarr
+from . import preserve, radarr, qbittorrent
 from .config import settings
 from .logger import log
 
 JobKind = Literal["upgrade", "downgrade"]
 JobStatus = Literal["searching", "downloading", "importing", "done", "failed", "skipped"]
 
+# Optional coordination file (settings.qbit_active_hashes_file, off by
+# default) for an external qBittorrent queue manager: it lists the torrent
+# hashes Reclaimarr has force-started, so that other tool can leave them
+# alone. Format: {"<info_hash>": {"movie_id": ..., "since": "..."}}. Only
+# ever written here; the other side is expected to treat it as read-only.
+
 
 def _now() -> str:
     return datetime.datetime.now(datetime.timezone.utc).isoformat()
+
+
+def _load_active_hashes() -> dict:
+    path = settings.qbit_active_hashes_file
+    if not path:
+        return {}
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            data = json.load(f)
+        return data if isinstance(data, dict) else {}
+    except Exception:
+        return {}
+
+
+def _save_active_hashes(data: dict) -> None:
+    path = settings.qbit_active_hashes_file
+    if not path:
+        return
+    tmp = path + ".tmp"
+    try:
+        try:
+            with open(tmp, "w", encoding="utf-8") as f:
+                json.dump(data, f)
+            os.replace(tmp, path)
+        except OSError:
+            # Atomic replace can't work when the file itself is a single-file
+            # bind mount (EBUSY) or the directory isn't writable -- fall back
+            # to rewriting it in place.
+            with open(path, "w", encoding="utf-8") as f:
+                json.dump(data, f)
+            try:
+                os.remove(tmp)
+            except OSError:
+                pass
+    except Exception as exc:  # noqa: BLE001 -- the coordination file is a nice-to-have, never block a job over it
+        print(f"jobs: couldn't write active-hashes file (non-fatal): {exc}")
 
 
 @dataclass
@@ -31,6 +73,7 @@ class Job:
     history_baseline_id: int = 0
     attempt_count: int = 0
     tried_release_guids: list[str] = field(default_factory=list)
+    qbit_hash: str = ""
     created_at: str = field(default_factory=_now)
     updated_at: str = field(default_factory=_now)
 
@@ -52,6 +95,17 @@ class JobStore:
         self.downgrade_checks: dict[str, str] = {}
         self.upgrade_checks: dict[str, str] = {}
         self.history: list[dict[str, Any]] = []
+        # All-time counters, driven entirely by record_history — powers the
+        # Discord footer ("142 upgraded • 1.2TB saved all-time") and survives
+        # restarts since it's persisted alongside everything else here.
+        self.stats: dict[str, float] = {
+            "upgrades_done": 0,
+            "downgrades_done": 0,
+            "gb_saved_total": 0.0,
+            "duplicates_removed": 0,
+            "stalls_recovered": 0,
+            "integrity_fixes": 0,
+        }
         # path -> {"since": when WE moved it, "kind": upgrade/downgrade,
         # "movie_id": ..., "original_file_path": ...}. Filesystem timestamps
         # (mtime, ctime) are NOT reliable for "since" — confirmed live that
@@ -76,6 +130,7 @@ class JobStore:
         self.upgrade_checks = raw.get("upgrade_checks", {})
         self.history = raw.get("history", [])
         self.preserved_files = raw.get("preserved_files", {})
+        self.stats.update(raw.get("stats", {}))
 
     async def _save(self) -> None:
         os.makedirs(os.path.dirname(self._path), exist_ok=True)
@@ -85,6 +140,7 @@ class JobStore:
             "upgrade_checks": self.upgrade_checks,
             "history": self.history,
             "preserved_files": self.preserved_files,
+            "stats": self.stats,
         }
         tmp_path = self._path + ".tmp"
         with open(tmp_path, "w", encoding="utf-8") as f:
@@ -116,10 +172,37 @@ class JobStore:
             job.updated_at = _now()
             await self._save()
 
+    async def set_qbit_hash(self, movie_id: int, info_hash: str) -> None:
+        """Called once, the first time an upgrade job's real queue entry
+        (and therefore its qBittorrent hash) is known. Force-starts +
+        top-priorities it directly, and records the hash in the optional
+        coordination file (if configured) -- see qbittorrent.py."""
+        info_hash = (info_hash or "").lower()
+        if not qbittorrent._valid_hash(info_hash):
+            # Not a torrent hash (e.g. a Usenet client's download id).
+            return
+        async with self._lock:
+            key = str(movie_id)
+            job = self.active_jobs.get(key)
+            if job is None or job.qbit_hash:
+                return
+            job.qbit_hash = info_hash
+            job.updated_at = _now()
+            await self._save()
+        await qbittorrent.force_priority(info_hash)
+        active = _load_active_hashes()
+        active[info_hash] = {"movie_id": movie_id, "since": _now()}
+        _save_active_hashes(active)
+
     async def release(self, movie_id: int) -> None:
         async with self._lock:
-            self.active_jobs.pop(str(movie_id), None)
+            job = self.active_jobs.pop(str(movie_id), None)
             await self._save()
+        if job and job.qbit_hash:
+            active = _load_active_hashes()
+            if active.pop(job.qbit_hash, None) is not None:
+                _save_active_hashes(active)
+            await qbittorrent.unforce(job.qbit_hash)
 
     async def is_claimed(self, movie_id: int) -> bool:
         return str(movie_id) in self.active_jobs
@@ -167,10 +250,18 @@ class JobStore:
         outcome: str,
         detail: str,
         poster_url: Optional[str] = None,
+        gb_saved: float = 0.0,
     ) -> None:
         """Append a completed job's outcome for the History tab. Capped at
         MAX_HISTORY entries (oldest dropped) since active_jobs itself only
         ever holds in-flight work — this is the only record of what happened.
+
+        Also the single integration point for the all-time stats counters
+        (see __init__) and the Discord daily digest's 24h window — every
+        notable outcome, not just "upgrade done"/"downgrade done", flows
+        through here now (dedupe cleanups, stall recoveries, integrity
+        fixes) so both stay accurate without duplicating bookkeeping at
+        every call site.
         """
         async with self._lock:
             self.history.insert(
@@ -182,11 +273,40 @@ class JobStore:
                     "outcome": outcome,
                     "detail": detail,
                     "poster_url": poster_url,
+                    "gb_saved": gb_saved,
                     "at": _now(),
                 },
             )
             self.history = self.history[: self.MAX_HISTORY]
+            if kind == "upgrade" and outcome == "done":
+                self.stats["upgrades_done"] += 1
+            if kind == "downgrade" and outcome == "done":
+                self.stats["downgrades_done"] += 1
+                self.stats["gb_saved_total"] += gb_saved
+            if outcome == "duplicate_removed":
+                self.stats["duplicates_removed"] += 1
+            if outcome == "stalled_retry":
+                self.stats["stalls_recovered"] += 1
+            if outcome == "integrity_fixed":
+                self.stats["integrity_fixes"] += 1
             await self._save()
+
+    def recent_stats(self, hours: int = 24) -> dict[str, Any]:
+        """Aggregate of everything recorded in the last `hours` — powers the
+        Discord daily digest. Independent of the all-time `stats` dict, which
+        never resets.
+        """
+        cutoff = datetime.datetime.now(datetime.timezone.utc) - datetime.timedelta(hours=hours)
+        recent = [h for h in self.history if datetime.datetime.fromisoformat(h["at"]) >= cutoff]
+        return {
+            "upgrades_done": sum(1 for h in recent if h["kind"] == "upgrade" and h["outcome"] == "done"),
+            "downgrades_done": sum(1 for h in recent if h["kind"] == "downgrade" and h["outcome"] == "done"),
+            "gb_saved": sum(h.get("gb_saved", 0.0) for h in recent if h["outcome"] == "done"),
+            "duplicates_removed": sum(1 for h in recent if h["outcome"] == "duplicate_removed"),
+            "stalls_recovered": sum(1 for h in recent if h["outcome"] == "stalled_retry"),
+            "integrity_fixes": sum(1 for h in recent if h["outcome"] == "integrity_fixed"),
+            "failed": sum(1 for h in recent if h["outcome"] == "failed"),
+        }
 
     async def record_downgrade_check(self, movie_id: int) -> None:
         async with self._lock:
@@ -201,9 +321,9 @@ class JobStore:
         age = datetime.datetime.now(datetime.timezone.utc) - last_dt
         return age.days >= settings.downgrade_recheck_days
 
-    async def record_upgrade_check(self, movie_id: int) -> None:
+    async def record_upgrade_check(self, movie_id: int, no_release_found: bool = False) -> None:
         async with self._lock:
-            self.upgrade_checks[str(movie_id)] = _now()
+            self.upgrade_checks[str(movie_id)] = {"at": _now(), "no_release_found": no_release_found}
             await self._save()
 
     async def should_check_upgrade(self, movie_id: int) -> bool:
@@ -214,13 +334,25 @@ class JobStore:
         re-claim and re-search the same movie every cycle indefinitely —
         hammering indexers and repeatedly renaming an already-preserved file.
         This caps retries to once per UPGRADE_RETRY_COOLDOWN_MINUTES.
+
+        A brand-new release with genuinely no 4K version anywhere yet
+        (e.g. a same-week release) gets a much longer cooldown instead —
+        the flat 30min cooldown otherwise means a futile indexer search repeats
+        every 30 minutes for as long as someone leaves it open/playing,
+        for something that plainly isn't going to appear that fast.
         """
         last = self.upgrade_checks.get(str(movie_id))
         if last is None:
             return True
-        last_dt = datetime.datetime.fromisoformat(last)
+        # Backward-compat: older entries were a bare ISO-timestamp string.
+        if isinstance(last, str):
+            last_at, no_release_found = last, False
+        else:
+            last_at, no_release_found = last.get("at"), last.get("no_release_found", False)
+        last_dt = datetime.datetime.fromisoformat(last_at)
         age = datetime.datetime.now(datetime.timezone.utc) - last_dt
-        return age.total_seconds() >= settings.upgrade_retry_cooldown_minutes * 60
+        cooldown_minutes = settings.upgrade_no_release_cooldown_hours * 60 if no_release_found else settings.upgrade_retry_cooldown_minutes
+        return age.total_seconds() >= cooldown_minutes * 60
 
     async def recover_on_startup(self) -> list[tuple[int, JobKind]]:
         """Re-validate every in-flight job against live Radarr state.
@@ -269,7 +401,7 @@ class JobStore:
                     await radarr.set_quality_profile(job.movie_id, job.original_quality_profile_id)
                 except Exception as exc:  # noqa: BLE001
                     await log(f"jobs: failed to revert quality profile for movie {job.movie_id}: {exc}")
-            # Confirmed live (Under Siege): a job reverted here without this
+            # In practice, a job reverted here without this
             # left the movie with NO file at all — its original was already
             # moved to the vault before the crash/restart, and this path
             # never knew to move it back. A movie must never end a "revert"

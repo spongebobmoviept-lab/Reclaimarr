@@ -6,9 +6,9 @@ from contextlib import asynccontextmanager
 from fastapi import Depends, FastAPI, HTTPException, Request
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, RedirectResponse, Response
 
-from . import auth_store, connections_store, plex, preserve, radarr, settings_store, tautulli, workflows
+from . import auth_store, connections_store, discord, plex, preserve, radarr, settings_store, tautulli, workflows
 from .auth import check_credentials, require_login, security
-from .config import settings
+from .config import APP_VERSION, settings
 from .jobs import store
 from .logger import log
 
@@ -26,6 +26,11 @@ async def lifespan(_: FastAPI):
     to_resume = await store.recover_on_startup()
     for movie_id, kind in to_resume:
         workflows.resume_job_monitor(movie_id, kind)
+
+    if settings.media_roots:
+        await log(f"reclaimarr: media roots: {', '.join(settings.media_roots)}")
+    else:
+        await log("reclaimarr: WARNING — MEDIA_ROOTS is empty or invalid; no file will ever be moved or deleted")
 
     if settings.dry_run:
         await log("reclaimarr: DRY RUN mode — mutating Plex/Radarr calls will be logged, not executed")
@@ -49,17 +54,23 @@ async def lifespan(_: FastAPI):
     await log(f"reclaimarr: starting library integrity check loop (every {settings.library_integrity_check_interval_hours}h, runs regardless of workflow on/off switches)")
     _background_tasks.append(asyncio.create_task(workflows.library_integrity_loop()))
 
+    await log(f"reclaimarr: starting daily Discord digest loop (posts at {settings.digest_hour_utc:02d}:00 UTC)")
+    _background_tasks.append(asyncio.create_task(workflows.daily_digest_loop()))
+
+    if settings.discord_startup_notice:
+        await discord.startup_online()
+
     yield
     for task in _background_tasks:
         task.cancel()
 
 
-app = FastAPI(title="Reclaimarr", lifespan=lifespan)
+app = FastAPI(title="Reclaimarr", version=APP_VERSION, lifespan=lifespan)
 
 
 @app.get("/health")
 async def health() -> dict:
-    return {"status": "ok"}
+    return {"status": "ok", "version": APP_VERSION}
 
 
 @app.get("/favicon.svg")
@@ -267,6 +278,21 @@ async def api_force_upgrade_movie(movie_id: int, _: str = Depends(require_login)
     """Trigger the upgrade workflow for a movie that isn't currently playing (e.g. testing)."""
     result = await workflows.force_upgrade_movie(movie_id)
     return JSONResponse({"result": result})
+
+
+@app.post("/api/movies/{movie_id}/pause-upgrade")
+async def api_pause_upgrade_movie(movie_id: int, body: dict, _: str = Depends(require_login)) -> JSONResponse:
+    """Temporarily prevents this movie from claiming an upgrade job, so a
+    shared viewing (e.g. Servarr's Movie Night) isn't interrupted by a
+    surprise mid-movie 4K swap. Body: {"minutes": 1-1440}, default 240.
+    Requires the same admin login as every other API route.
+    """
+    minutes = body.get("minutes", 240)
+    if isinstance(minutes, bool) or not isinstance(minutes, int) or not 1 <= minutes <= 1440:
+        raise HTTPException(status_code=400, detail="minutes must be an integer between 1 and 1440")
+    workflows.pause_upgrade_for(movie_id, minutes)
+    await log(f"upgrade: paused for movie {movie_id} for {minutes}m (movie night)")
+    return JSONResponse({"ok": True, "paused_minutes": minutes})
 
 
 @app.post("/api/sessions/{session_key}/trigger-upgrade")

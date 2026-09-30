@@ -86,8 +86,15 @@ async def list_sessions() -> list[PlexSession]:
     return sessions
 
 
-@with_retry(label="Plex: terminate session")
+@with_retry(attempts=1, label="Plex: terminate session")
 async def terminate_session(machine_identifier: str, reason: str) -> None:
+    # A session found moments ago
+    # by sessions_for_title can still 404 on the actual terminate call if it
+    # ends/reassigns in that same window — retrying the same now-invalid
+    # session id 3x with backoff can't fix that, it can only delay the
+    # caller from moving on. Single attempt; the caller catches failures
+    # per-session so one bad terminate never blocks the others or crashes
+    # the whole finish-upgrade flow.
     if settings.dry_run or settings.never_terminate_session:
         why = "DRY RUN" if settings.dry_run else "NEVER_TERMINATE_SESSION"
         await log(f"[{why}] would terminate Plex session {machine_identifier} with message: {reason!r}")
@@ -213,7 +220,7 @@ async def refresh_movies_section() -> None:
     """Ask Plex to rescan the whole movie library section for changes.
 
     Deliberately NOT scoped to one item's rating key — confirmed live
-    (2012, repeatedly) that a rating key can go stale or even get
+    repeatedly that a rating key can go stale or even get
     reassigned entirely after a file swap, and refreshing by a now-wrong
     key does nothing useful. A section-wide refresh has no such dependency:
     Plex re-scans every folder, and matches primarily by folder/filename
@@ -323,7 +330,7 @@ async def sessions_for_rating_key(rating_key: str) -> list[PlexSession]:
 
 async def sessions_for_title(title: str) -> list[PlexSession]:
     """More reliable than sessions_for_rating_key for a movie whose file has
-    just been swapped — confirmed live (Ron's Gone Wrong) that a rating key
+    just been swapped — in practice a rating key
     can drift multiple times within a single minute under that churn, so a
     key captured even moments ago can already be wrong by notify time.
     Title is what actually stays stable throughout.
