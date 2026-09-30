@@ -53,11 +53,12 @@ flowchart LR
 
 ## Quick start
 
-**You'll need:** Docker + Docker Compose, a running Plex server, and a running Radarr instance you have admin access to.
+**You'll need:** Docker with Docker Compose v2.24 or newer, a running Plex server, and a running Radarr instance you have admin access to. Nothing to build: a ready-made image is published for **amd64** and **arm64** (including Raspberry Pi 4/5 on a 64-bit OS).
 
 ```bash
-git clone https://github.com/spongebobmoviept-lab/Reclaimarr.git
-cd Reclaimarr
+mkdir -p reclaimarr/data && cd reclaimarr
+curl -fsSLO https://raw.githubusercontent.com/spongebobmoviept-lab/Reclaimarr/master/docker-compose.yml
+curl -fsSL -o .env.example https://raw.githubusercontent.com/spongebobmoviept-lab/Reclaimarr/master/.env.example
 ```
 
 **1. Point it at your media.** Open `docker-compose.yml` and change this line:
@@ -70,15 +71,13 @@ to wherever your movie library actually lives on this machine — it needs to be
 
 If Radarr has more than one movie root folder (say `/media2/Movies` and `/media4/Movies`), mount each one and list them in `MEDIA_ROOTS` (next step). Reclaimarr never renames, moves, or deletes anything outside those roots.
 
-**2. Create your `.env`:**
+**2. Optional: create a `.env`.** The defaults are fine for most setups. You only need one if you use more than one media root (`MEDIA_ROOTS=/media2,/media4`) or want the optional qBittorrent boost:
 
 ```bash
 cp .env.example .env
 ```
 
-The defaults are fine for most setups. Edit it only if you use more than one media root (`MEDIA_ROOTS=/media2,/media4`) or want the optional qBittorrent boost.
-
-**3. Start it:**
+**3. Start it.** The container runs as uid/gid 1000 by default; `data/` and your movie folders must be writable by that user. If yours differ, put `PUID=` and `PGID=` (from `id -u` / `id -g`) in `.env`.
 
 ```bash
 docker compose up -d
@@ -142,9 +141,16 @@ Every `/api/*` route uses the same HTTP Basic admin login as the web UI.
 
 `scripts/test_unwatched_downgrade.py` picks the N biggest movies with no Tautulli watch history and asks Reclaimarr to run a real downgrade on each, 2 seconds apart. It is configured with environment variables (see the top of the file). It starts real jobs, so try it with `DRY_RUN=true` first.
 
+## Building from source
+
+Prefer to build the image yourself? Either clone the repo and run `docker build -t reclaimarr .`, or in `docker-compose.yml` swap the `image:` line for the commented `build:` line and run `docker compose up -d --build` (no clone needed).
+
+To update the prebuilt image later, change the version tag on the `image:` line (or use `:latest`) and run `docker compose pull && docker compose up -d`.
+
 ## Running the tests
 
 ```bash
+git clone https://github.com/spongebobmoviept-lab/Reclaimarr.git && cd Reclaimarr
 docker build -t reclaimarr .
 docker run --rm -v "$PWD/tests:/app/tests:ro" -w /app reclaimarr python -m unittest discover -s tests -t .
 ```
@@ -168,7 +174,7 @@ Yes — the "who can trigger 4K upgrades" setting lets you restrict it to specif
 
 ## Troubleshooting
 
-- **The container won't start / crashes immediately.** Check `docker compose logs -f reclaimarr` — the most common causes are a missing `.env` (run `cp .env.example .env`) or the media volume path in `docker-compose.yml` not existing on the host.
+- **The container won't start / crashes immediately.** Check `docker compose logs -f reclaimarr` — the most common causes are an old Docker Compose (the optional `env_file` needs v2.24+; update Compose, or create an empty `.env`) or the media volume path in `docker-compose.yml` not existing on the host.
 - **Files are never preserved/moved ("REFUSING ... outside all allowed media roots" in the Log).** `MEDIA_ROOTS` doesn't match the container paths Radarr reports. Make them identical.
 - **The wizard's "Test Connection" fails for Plex or Radarr.** Double check the URL includes `http://` and the correct port, and that it's reachable *from inside the container* — `localhost` almost never works here, use the machine's real LAN IP.
 - **Nothing seems to be happening.** Check the in-app Log tab first — every decision (including *why* a movie was skipped) is logged there.

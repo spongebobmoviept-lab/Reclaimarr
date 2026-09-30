@@ -13,8 +13,9 @@
 
 ### Changed
 - Plex session terminate is a single attempt, and a failure no longer aborts the rest of the finish-upgrade flow.
-- The `.env` template is now `.env.example`; copy it to `.env` before the first start. `.env` is git-ignored.
+- The `.env` template is now `.env.example` and `.env` is optional (and git-ignored).
 - Docker base image pinned to `python:3.12-slim-bookworm`; `/health` reports the version.
+- Prebuilt multi-arch images (amd64 + arm64) at `ghcr.io/spongebobmoviept-lab/reclaimarr` (`1.1.0`, `1.1`, `latest`). `docker-compose.yml` uses the image by default; `.env` is optional.
 
 ## 1.0.0
 
