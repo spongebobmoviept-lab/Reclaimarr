@@ -34,6 +34,15 @@ async def test_connection(url: str, api_key: str) -> dict:
     return {"version": version, "quality_profiles": profiles}
 
 
+async def root_folders() -> list[str]:
+    """Radarr's movie root folder paths, as Radarr (and so this container,
+    if the volumes match) sees them."""
+    async with _client() as client:
+        resp = await client.get("/rootfolder")
+        resp.raise_for_status()
+        return [f["path"] for f in resp.json() if f.get("path")]
+
+
 @dataclass
 class RadarrMovie:
     id: int

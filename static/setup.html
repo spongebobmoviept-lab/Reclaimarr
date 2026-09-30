@@ -203,6 +203,9 @@
           <label for="profile-1080p">Which profile should downgraded movies use? (a smaller, non-4K profile)</label>
           <select id="profile-1080p"></select>
           <div class="field-hint">Don't have dedicated profiles for this yet? You can leave these and set them up later in Radarr, then update them from Reclaimarr's Settings page.</div>
+
+          <label>Your movie folders</label>
+          <div id="media-roots-list" class="field-hint">Checking Radarr's root folders…</div>
         </div>
 
         <div class="actions">
@@ -229,12 +232,21 @@
 
         <label for="discord-webhook">Discord webhook URL</label>
         <input type="text" id="discord-webhook" placeholder="https://discord.com/api/webhooks/..." />
+        <div class="field-hint">Posts 4K-ready notices, space reclaimed, and a daily digest.</div>
         <details class="help">
           <summary>How do I get a Discord webhook URL?</summary>
           <div class="help-body">
             In Discord: <strong>Server Settings</strong> → <strong>Integrations</strong> → <strong>Webhooks</strong> → <strong>New Webhook</strong> → pick a channel → <strong>Copy Webhook URL</strong>.
           </div>
         </details>
+
+        <label for="qbit-url" style="margin-top:1.2rem;">qBittorrent Web UI URL</label>
+        <input type="url" id="qbit-url" placeholder="http://192.168.1.50:8080" />
+        <div class="field-hint">Optional: lets Reclaimarr jump a 4K download to the front of the queue while someone is waiting for it.</div>
+        <label for="qbit-user">qBittorrent username</label>
+        <input type="text" id="qbit-user" value="admin" />
+        <label for="qbit-pass">qBittorrent password</label>
+        <input type="password" id="qbit-pass" autocomplete="off" />
         <div class="result" id="result-4"></div>
         <div class="actions">
           <button class="btn btn-ghost" data-back="3">Back</button>
@@ -261,7 +273,7 @@
   const STEP_LABELS = ["Login", "Plex", "Radarr", "Extras", "Done"];
   let currentStep = 1;
   let authToken = null;
-  const state = { plex_url: "", radarr_url: "", tautulli_url: "", discord_webhook_url: "" };
+  const state = { plex_url: "", radarr_url: "", tautulli_url: "", discord_webhook_url: "", qbit_url: "", media_roots: [] };
 
   function $(sel) { return document.querySelector(sel); }
 
@@ -372,16 +384,16 @@
         $("#profile-1080p").innerHTML = opts;
         $("#radarr-profiles").classList.add("show");
         showResult(3, true, `Connected — Radarr v${res.version}. Pick your profiles below, then continue.`);
+        await api("/api/connections", { method: "POST", body: { radarr_url: url, radarr_api_key: apiKey } });
+        await loadMediaRoots();
       } else {
         // Second click: actually save and advance.
-        await api("/api/connections", { method: "POST", body: { radarr_url: url, radarr_api_key: apiKey } });
-        await api("/api/settings", {
-          method: "POST",
-          body: {
-            radarr_4k_profile_id: Number($("#profile-4k").value),
-            radarr_1080p_profile_id: Number($("#profile-1080p").value),
-          },
-        });
+        const body = {
+          radarr_4k_profile_id: Number($("#profile-4k").value),
+          radarr_1080p_profile_id: Number($("#profile-1080p").value),
+        };
+        if (state.media_roots.length) body.media_roots = state.media_roots;
+        await api("/api/settings", { method: "POST", body });
         state.radarr_url = url;
         goToStep(4);
       }
@@ -391,6 +403,39 @@
       setBusy(btn, false);
     }
   });
+
+  // Detects which of Radarr's root folders this container can actually see
+  // and sets MEDIA_ROOTS from them — no config file editing.
+  async function loadMediaRoots() {
+    const el = $("#media-roots-list");
+    try {
+      const res = await api("/api/setup/media-roots");
+      state.media_roots = res.suggested;
+      if (!res.folders.length) {
+        el.textContent = "Radarr has no root folders yet — add one in Radarr (Settings → Media Management), then come back.";
+        return;
+      }
+      el.innerHTML = "";
+      res.folders.forEach((f) => {
+        const row = document.createElement("div");
+        row.textContent = (f.visible ? "✓ " : "✗ ") + f.path + (f.visible ? " — found" : " — not visible to Reclaimarr");
+        row.style.color = f.visible ? "var(--green)" : "var(--red)";
+        el.appendChild(row);
+      });
+      const note = document.createElement("div");
+      if (res.suggested.length) {
+        note.textContent = "Reclaimarr will only ever touch files under: " + res.suggested.join(", ");
+      } else {
+        note.textContent = "None of Radarr's folders are visible yet. In docker-compose.yml, mount your movie folder at the same path Radarr uses (e.g. - /your/movies:" + res.folders[0].root + "), run docker compose up -d, and reopen this page. You can continue meanwhile; nothing will be moved or deleted.";
+      }
+      if (res.folders.some((f) => !f.visible) && res.suggested.length) {
+        note.textContent += ". Folders marked ✗ need a matching volume line in docker-compose.yml.";
+      }
+      el.appendChild(note);
+    } catch (e) {
+      el.textContent = "Couldn't read Radarr's root folders: " + e.message;
+    }
+  }
 
   // ---- Step 4: optional ----
   $("#btn-4-next").addEventListener("click", async () => {
@@ -407,12 +452,26 @@
       const update = {};
       if (tautulliUrl) update.tautulli_url = tautulliUrl;
       if (tautulliKey) update.tautulli_api_key = tautulliKey;
-      if (discordWebhook) { update.discord_webhook_url = discordWebhook; state.discord_webhook_url = discordWebhook; }
+      if (discordWebhook) {
+        if (!/^https:\/\/(?:ptb\.|canary\.)?discord(?:app)?\.com\/api\/webhooks\/\d+\/[\w-]+$/.test(discordWebhook)) {
+          throw new Error("That doesn't look like a Discord webhook URL — it should start with https://discord.com/api/webhooks/");
+        }
+        update.discord_webhook_url = discordWebhook; state.discord_webhook_url = discordWebhook;
+      }
+      const qbitUrl = $("#qbit-url").value.trim().replace(/\/$/, "");
+      if (qbitUrl) {
+        const qbitUser = $("#qbit-user").value.trim() || "admin";
+        const qbitPass = $("#qbit-pass").value;
+        const q = await api("/api/setup/test-qbit", { method: "POST", body: { url: qbitUrl, username: qbitUser, password: qbitPass } });
+        update.qbit_url = qbitUrl; update.qbit_username = qbitUser;
+        if (qbitPass) update.qbit_password = qbitPass;
+        state.qbit_url = qbitUrl + " (v" + q.version.replace(/^v/, "") + ")";
+      }
       if (Object.keys(update).length) await api("/api/connections", { method: "POST", body: update });
       buildSummary();
       goToStep(5);
     } catch (e) {
-      showResult(4, false, "Couldn't verify Tautulli: " + e.message + " — fix it or leave these blank and continue later.");
+      showResult(4, false, e.message + " — fix it, or leave it blank and add it later from Settings.");
     } finally {
       setBusy(btn, false);
     }
@@ -424,7 +483,9 @@
       ["Plex — " + state.plex_url, true],
       ["Radarr — " + state.radarr_url, true],
       ["Tautulli", !!state.tautulli_url],
+      ["Movie folders — " + (state.media_roots.join(", ") || "none visible yet"), state.media_roots.length > 0],
       ["Discord notifications", !!state.discord_webhook_url],
+      ["qBittorrent boost" + (state.qbit_url ? " — " + state.qbit_url : ""), !!state.qbit_url],
     ];
     $("#summary").innerHTML = rows
       .map(([label, ok]) => `<div class="summary-row"><span>${label}</span><span class="${ok ? "ok-tag" : "skip-tag"}">${ok ? "✓ configured" : "skipped"}</span></div>`)

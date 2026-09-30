@@ -6,7 +6,7 @@ from contextlib import asynccontextmanager
 from fastapi import Depends, FastAPI, HTTPException, Request
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, RedirectResponse, Response
 
-from . import auth_store, connections_store, discord, plex, preserve, radarr, settings_store, tautulli, workflows
+from . import auth_store, connections_store, discord, friendly, plex, preserve, qbittorrent, radarr, settings_store, tautulli, workflows
 from .auth import check_credentials, require_login, security
 from .config import APP_VERSION, settings
 from .jobs import store
@@ -143,7 +143,7 @@ async def api_setup_test_plex(body: dict, _: str = Depends(require_login)) -> JS
     try:
         result = await plex.test_connection(body.get("url", ""), body.get("token", ""))
     except Exception as exc:  # noqa: BLE001
-        raise HTTPException(status_code=400, detail=f"Couldn't connect: {exc}")
+        raise HTTPException(status_code=400, detail=friendly.explain(exc, "Plex"))
     return JSONResponse(result)
 
 
@@ -152,7 +152,7 @@ async def api_setup_test_radarr(body: dict, _: str = Depends(require_login)) -> 
     try:
         result = await radarr.test_connection(body.get("url", ""), body.get("api_key", ""))
     except Exception as exc:  # noqa: BLE001
-        raise HTTPException(status_code=400, detail=f"Couldn't connect: {exc}")
+        raise HTTPException(status_code=400, detail=friendly.explain(exc, "Radarr"))
     return JSONResponse(result)
 
 
@@ -161,8 +161,50 @@ async def api_setup_test_tautulli(body: dict, _: str = Depends(require_login)) -
     try:
         result = await tautulli.test_connection(body.get("url", ""), body.get("api_key", ""))
     except Exception as exc:  # noqa: BLE001
-        raise HTTPException(status_code=400, detail=f"Couldn't connect: {exc}")
+        raise HTTPException(status_code=400, detail=friendly.explain(exc, "Tautulli"))
     return JSONResponse(result)
+
+
+@app.post("/api/setup/test-qbit")
+async def api_setup_test_qbit(body: dict, _: str = Depends(require_login)) -> JSONResponse:
+    url = (body.get("url") or "").strip()
+    password = body.get("password") or settings.qbit_password
+    if not url:
+        raise HTTPException(status_code=400, detail="Enter qBittorrent's Web UI address.")
+    try:
+        result = await qbittorrent.test_connection(url, body.get("username") or "admin", password)
+    except PermissionError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    except Exception as exc:  # noqa: BLE001
+        raise HTTPException(status_code=400, detail=friendly.explain(exc, "qBittorrent"))
+    return JSONResponse(result)
+
+
+@app.get("/api/setup/media-roots")
+async def api_setup_media_roots(_: str = Depends(require_login)) -> JSONResponse:
+    """Radarr's root folders, whether each one is visible inside this
+    container, and the media roots Reclaimarr would use for them — so the
+    wizard can set MEDIA_ROOTS without anyone hand-editing a file.
+
+    The suggested root is the folder's top-level directory (/media2 for
+    /media2/Movies), so the safety vault (<root>/reclaimarr-vault) sits
+    outside Radarr's own root folder and never shows up in its library.
+    """
+    try:
+        folders = await radarr.root_folders()
+    except Exception as exc:  # noqa: BLE001
+        raise HTTPException(status_code=400, detail=friendly.explain(exc, "Radarr"))
+    result = []
+    suggested: list[str] = []
+    for path in folders:
+        norm = os.path.normpath(path.rstrip("/") or "/")
+        parts = [p for p in norm.split("/") if p]
+        top = "/" + parts[0] if parts else ""
+        visible = os.path.isdir(norm)
+        result.append({"path": norm, "visible": visible, "root": top})
+        if visible and top and top not in suggested:
+            suggested.append(top)
+    return JSONResponse({"folders": result, "suggested": suggested, "current": settings.media_roots})
 
 
 @app.get("/style.css")
@@ -459,6 +501,10 @@ async def update_settings(update: dict, _: str = Depends(require_login)) -> JSON
     unknown = [k for k in update if k not in settings_store.EDITABLE_KEYS]
     if unknown:
         raise HTTPException(status_code=400, detail=f"Unknown/non-editable setting(s): {unknown}")
+    try:
+        update = settings_store.validate(update)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
     return JSONResponse(settings_store.save_overrides(update))
 
 

@@ -413,6 +413,12 @@ const SETTINGS_LABELS = {
   min_speed_check_after_minutes: "Grace period before checking download speed (minutes)",
   library_integrity_check_interval_hours: "Library integrity check interval (hours)",
   min_release_seeders: "Minimum seeders for a release to be picked",
+  upgrade_no_release_cooldown_hours: "Retry cooldown when no 4K release exists at all (hours)",
+  digest_hour_utc: "Daily Discord digest hour (UTC, 0-23)",
+  discord_username: "Name the Discord webhook posts under",
+  discord_startup_notice: "Post an \"online\" notice to Discord on every start",
+  integrity_sanity_limit: "Skip an integrity pass if more than this many files look missing (mount probably down)",
+  media_roots: "Media folders Reclaimarr may touch (container paths, comma-separated, e.g. /media2,/media4)",
 };
 
 const SETTINGS_GROUPS = [
@@ -426,14 +432,16 @@ const SETTINGS_GROUPS = [
   },
   {
     title: "Upgrade Rules",
-    keys: ["max_4k_release_size_gb", "poll_interval_seconds", "upgrade_retry_cooldown_minutes", "never_terminate_session"],
+    keys: ["max_4k_release_size_gb", "poll_interval_seconds", "upgrade_retry_cooldown_minutes", "upgrade_no_release_cooldown_hours", "never_terminate_session"],
   },
   { title: "Retention", keys: ["keep_original_days"] },
   {
     title: "Downloads & Safety",
     keys: ["max_download_attempts", "min_release_seeders", "min_download_speed_kbps", "min_speed_check_after_minutes"],
   },
-  { title: "System", keys: ["library_integrity_check_interval_hours"] },
+  { title: "Media Folders", keys: ["media_roots"] },
+  { title: "Discord", keys: ["digest_hour_utc", "discord_username", "discord_startup_notice"] },
+  { title: "System", keys: ["library_integrity_check_interval_hours", "integrity_sanity_limit"] },
 ];
 
 async function loadStatus() {
@@ -502,6 +510,18 @@ function buildSettingsField(key, value) {
     label.classList.add("checkbox-label");
     field.appendChild(input);
     field.appendChild(label);
+  } else if (Array.isArray(value)) {
+    input.type = "text";
+    input.dataset.kind = "list";
+    input.value = value.join(", ");
+    field.appendChild(label);
+    field.appendChild(input);
+  } else if (typeof value === "string") {
+    input.type = "text";
+    input.dataset.kind = "text";
+    input.value = value;
+    field.appendChild(label);
+    field.appendChild(input);
   } else {
     input.type = "number";
     input.step = "any";
@@ -551,14 +571,19 @@ async function saveSettings() {
   const form = $("#settings-form");
   const update = {};
   for (const input of form.querySelectorAll("input")) {
-    update[input.name] = input.type === "checkbox" ? input.checked : Number(input.value);
+    if (input.type === "checkbox") update[input.name] = input.checked;
+    else if (input.dataset.kind === "list") update[input.name] = input.value.split(",").map((v) => v.trim()).filter(Boolean);
+    else if (input.dataset.kind === "text") update[input.name] = input.value;
+    else update[input.name] = Number(input.value);
   }
   const resp = await fetch("/api/settings", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(update),
   });
-  $("#settings-status").textContent = resp.ok ? "Saved." : "Failed to save.";
+  let detail = "";
+  if (!resp.ok) { try { detail = (await resp.json()).detail || ""; } catch (e) { /* no body */ } }
+  $("#settings-status").textContent = resp.ok ? "Saved." : "Failed to save" + (detail ? ": " + detail : ".");
 }
 
 const CONNECTIONS_LABELS = {
@@ -569,6 +594,9 @@ const CONNECTIONS_LABELS = {
   tautulli_url: "Tautulli URL (optional)",
   tautulli_api_key: "Tautulli API Key (optional)",
   discord_webhook_url: "Discord Webhook URL (optional)",
+  qbit_url: "qBittorrent Web UI URL (optional, e.g. http://192.168.1.10:8080)",
+  qbit_username: "qBittorrent username (optional)",
+  qbit_password: "qBittorrent password (optional)",
 };
 
 async function loadConnections() {

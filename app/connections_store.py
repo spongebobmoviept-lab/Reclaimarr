@@ -4,12 +4,12 @@ import os
 from .config import settings
 
 # Plain fields: safe to show as-is (addresses, not credentials).
-PLAIN_KEYS = ["plex_url", "radarr_url", "tautulli_url"]
+PLAIN_KEYS = ["plex_url", "radarr_url", "tautulli_url", "qbit_url", "qbit_username"]
 # Secret fields: never returned in full — masked on read, only overwritten
 # when the caller actually sends a new (non-empty) value. discord_webhook_url
 # is a bearer-style URL (anyone
 # with it can post to the channel), so it's treated as a secret too.
-SECRET_KEYS = ["plex_token", "radarr_api_key", "tautulli_api_key", "discord_webhook_url"]
+SECRET_KEYS = ["plex_token", "radarr_api_key", "tautulli_api_key", "discord_webhook_url", "qbit_password"]
 
 ALL_KEYS = PLAIN_KEYS + SECRET_KEYS
 

@@ -1,7 +1,7 @@
 services:
   reclaimarr:
-    image: ghcr.io/spongebobmoviept-lab/reclaimarr:1.1.0   # ready-made image (amd64 + arm64)
-    # build: https://github.com/spongebobmoviept-lab/Reclaimarr.git#v1.1.0   # build from source instead: uncomment, then `docker compose up -d --build`
+    image: ghcr.io/spongebobmoviept-lab/reclaimarr:1.2.0   # ready-made image (amd64 + arm64)
+    # build: https://github.com/spongebobmoviept-lab/Reclaimarr.git#v1.2.0   # build from source instead: uncomment, then `docker compose up -d --build`
     container_name: reclaimarr
     restart: unless-stopped
     # Runs as this uid:gid (the image never runs as root). ./data must be
@@ -11,7 +11,7 @@ services:
       - "8585:8585"
     env_file:
       - path: .env
-        required: false   # optional: copy .env.example to .env to change the defaults
+        required: false   # optional: everything is set in the web setup page
     volumes:
       - ./data:/data
       # IMPORTANT — change the left side of the line below to wherever your

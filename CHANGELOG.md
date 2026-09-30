@@ -1,5 +1,17 @@
 # Changelog
 
+## 1.2.0 — 2026-09-30
+
+### Added
+- **Turnkey setup.** The wizard reads Radarr's root folders, shows which ones the container can see, and sets the media folders itself; qBittorrent (URL, username, password) is set and tested in the wizard too. No config file editing needed.
+- Plain-English errors for every connection test (unreachable address, "localhost" inside a container, rejected key, wrong port), with secrets never echoed back.
+- New Settings-page fields: media folders, Discord digest hour, webhook display name, startup notice, no-4K-release cooldown and the integrity sanity limit. Setting values are validated.
+- `GET /api/setup/media-roots` and `POST /api/setup/test-qbit` (admin login).
+
+### Changed
+- `docker-compose.yml` uses `ghcr.io/spongebobmoviept-lab/reclaimarr:1.2.0`.
+
+
 ## 1.1.0 — 2026-09-30
 
 ### Added

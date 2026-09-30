@@ -69,12 +69,12 @@ curl -fsSL -o .env.example https://raw.githubusercontent.com/spongebobmoviept-la
 
 to wherever your movie library actually lives on this machine — it needs to be the **same path Radarr itself uses** (check a movie's file path inside Radarr's UI if you're not sure).
 
-If Radarr has more than one movie root folder (say `/media2/Movies` and `/media4/Movies`), mount each one and list them in `MEDIA_ROOTS` (next step). Reclaimarr never renames, moves, or deletes anything outside those roots.
+If Radarr has more than one movie root folder (say `/media2/Movies` and `/media4/Movies`), add a volume line for each. The setup page reads Radarr's root folders, shows which ones Reclaimarr can see, and sets its media folders for you. Reclaimarr never renames, moves, or deletes anything outside them.
 
-**2. Optional: create a `.env`.** The defaults are fine for most setups. You only need one if you use more than one media root (`MEDIA_ROOTS=/media2,/media4`) or want the optional qBittorrent boost:
+**2. You don't need a `.env`.** Everything is set in the setup page. `.env.example` lists the few infrastructure options (like `PUID`/`PGID`) if you ever want them:
 
 ```bash
-cp .env.example .env
+cp .env.example .env   # optional
 ```
 
 **3. Start it.** The container runs as uid/gid 1000 by default; `data/` and your movie folders must be writable by that user. If yours differ, put `PUID=` and `PGID=` (from `id -u` / `id -g`) in `.env`.
@@ -87,8 +87,10 @@ docker compose up -d
 
 1. Create your login (username + password)
 2. Connect Plex — the wizard tells you exactly where to find your Plex token
-3. Connect Radarr — tests the connection live and lets you pick your 4K and downgrade-target quality profiles from a dropdown of your real profiles
-4. Optionally connect Tautulli and/or a Discord webhook for notifications
+3. Connect Radarr — tests the connection live, lets you pick your 4K and downgrade-target quality profiles from a dropdown of your real profiles, and checks which of Radarr's movie folders Reclaimarr can see (setting its media folders for you)
+4. Optionally connect Tautulli, a Discord webhook, and qBittorrent (for the 4K download boost)
+
+Every test explains in plain English what's wrong if it fails (wrong port, "localhost" inside a container, rejected key, and so on).
 
 That's it — takes about two minutes, and everything can be changed later from the in-app Settings page.
 
@@ -111,10 +113,11 @@ Everything below is set through the setup wizard or the in-app Settings page —
 
 ### Environment settings (`.env`)
 
-A few infrastructure settings live in `.env` instead of the UI. All are optional; see `.env.example`.
+You shouldn't need these: the media folders, qBittorrent, Discord and integrity settings are all editable in the setup page or the in-app Settings/Connections tabs, which override the values below. The variables remain as optional defaults; see `.env.example`.
 
 | Variable | Default | What it does |
 |---|---|---|
+| `PUID`, `PGID` | `1000` | User the container runs as; must own `data/` and your movie folders. |
 | `MEDIA_ROOTS` | `/media2` | Comma-separated container paths Reclaimarr may touch — the same paths Radarr uses. Each root gets its own `reclaimarr-vault` folder, so preserving a file is always a same-disk move. Must be absolute; `/` is rejected. |
 | `QBIT_URL`, `QBIT_USERNAME`, `QBIT_PASSWORD` | empty | Optional. When set, a 4K upgrade's torrent is force-started and moved to the top of qBittorrent's queue as soon as Radarr grabs it, then un-forced when the job ends. |
 | `QBIT_ACTIVE_HASHES_FILE` | empty (off) | Optional JSON file listing the torrent hashes Reclaimarr currently force-starts, for another queue-management script to read and leave alone. Mount a *folder* for it (see `docker-compose.yml`). |

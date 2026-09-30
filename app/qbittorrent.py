@@ -57,6 +57,19 @@ async def _session() -> httpx.AsyncClient:
     return client
 
 
+async def test_connection(url: str, username: str, password: str) -> dict:
+    """Setup-wizard check: logs in with the given credentials and reads the
+    app version. Raises on failure."""
+    async with httpx.AsyncClient(base_url=url.rstrip("/"), timeout=10, headers={"Referer": url.rstrip("/")}) as client:
+        resp = await client.post("/api/v2/auth/login", data={"username": username, "password": password})
+        resp.raise_for_status()
+        if resp.text.strip() == "Fails.":
+            raise PermissionError("qBittorrent rejected that username or password.")
+        version = await client.get("/api/v2/app/version")
+        version.raise_for_status()
+    return {"version": version.text.strip()}
+
+
 async def force_priority(info_hash: str) -> bool:
     """setForceStart(true) + topPrio on one torrent. Returns True on success,
     False (logged, non-fatal) on any failure or when qBittorrent isn't
