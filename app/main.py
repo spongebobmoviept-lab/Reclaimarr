@@ -54,8 +54,11 @@ async def lifespan(_: FastAPI):
     await log(f"reclaimarr: starting library integrity check loop (every {settings.library_integrity_check_interval_hours}h, runs regardless of workflow on/off switches)")
     _background_tasks.append(asyncio.create_task(workflows.library_integrity_loop()))
 
-    await log(f"reclaimarr: starting daily Discord digest loop (posts at {settings.digest_hour_utc:02d}:00 UTC)")
-    _background_tasks.append(asyncio.create_task(workflows.daily_digest_loop()))
+    if settings.digest_enabled:
+        await log(f"reclaimarr: starting daily Discord digest loop (posts at {settings.digest_hour_utc:02d}:00 UTC)")
+        _background_tasks.append(asyncio.create_task(workflows.daily_digest_loop()))
+    else:
+        await log("reclaimarr: daily digest disabled (DIGEST_ENABLED=false) — event posts unaffected")
 
     if settings.discord_startup_notice:
         await discord.startup_online()

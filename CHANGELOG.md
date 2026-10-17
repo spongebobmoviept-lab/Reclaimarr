@@ -1,5 +1,10 @@
 # Changelog
 
+## Unreleased
+
+### Added
+- `DIGEST_ENABLED` (default `true`): switch the once-a-day Discord digest off without losing the event embeds — useful when another bot already posts a daily summary in the same channel.
+
 ## 1.2.1 — 2026-09-30
 
 ### Fixed

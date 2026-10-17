@@ -123,6 +123,7 @@ You shouldn't need these: the media folders, qBittorrent, Discord and integrity 
 | `QBIT_ACTIVE_HASHES_FILE` | empty (off) | Optional JSON file listing the torrent hashes Reclaimarr currently force-starts, for another queue-management script to read and leave alone. Mount a *folder* for it (see `docker-compose.yml`). |
 | `UPGRADE_RETRY_COOLDOWN_MINUTES` | `30` | Minimum time between upgrade attempts for the same movie. |
 | `UPGRADE_NO_RELEASE_COOLDOWN_HOURS` | `12` | Longer cooldown when the last search found no 4K release at all (e.g. a same-week release). |
+| `DIGEST_ENABLED` | `true` | Daily Discord digest on/off. `false` skips only the once-a-day summary; every event embed still posts. |
 | `DIGEST_HOUR_UTC` | `13` | Hour (UTC) the daily Discord digest posts. |
 | `DISCORD_USERNAME` | `Reclaimarr` | Name the Discord webhook posts under. |
 | `DISCORD_STARTUP_NOTICE` | `false` | Post a short "online" notice on every start. |
@@ -132,7 +133,7 @@ You shouldn't need these: the media folders, qBittorrent, Discord and integrity 
 
 ## Discord notifications
 
-With a webhook configured, Reclaimarr posts rich embeds for: 4K upgrade ready (with size), no 4K available, space reclaimed, downgrade failed, duplicate grabs cleaned up, stalled download retried, library integrity fixes (one message per sweep), and integrity checks skipped because the mount looked down. Every embed carries an all-time stats footer, and a **daily digest** summarises the last 24 hours at `DIGEST_HOUR_UTC`.
+With a webhook configured, Reclaimarr posts rich embeds for: 4K upgrade ready (with size), no 4K available, space reclaimed, downgrade failed, duplicate grabs cleaned up, stalled download retried, library integrity fixes (one message per sweep), and integrity checks skipped because the mount looked down. Every embed carries an all-time stats footer, and a **daily digest** summarises the last 24 hours at `DIGEST_HOUR_UTC` (turn it off with `DIGEST_ENABLED=false`; the event embeds keep posting).
 
 ## API for other tools
 

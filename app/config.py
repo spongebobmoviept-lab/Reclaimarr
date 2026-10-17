@@ -171,6 +171,11 @@ class Settings:
         # DOWNGRADE_SCAN_HOUR_UTC — the digest still runs (reporting a quiet
         # day) even with the downgrade workflow disabled.
         self.digest_hour_utc = _env_int("DIGEST_HOUR_UTC", 13)
+        # Master switch for that daily summary. Off, the event embeds (4K
+        # upgrade ready, space reclaimed, integrity fixes, ...) still post —
+        # handy when another bot already summarises the day in the same
+        # channel.
+        self.digest_enabled = _env_bool("DIGEST_ENABLED", True)
         # Display name the Discord webhook posts under.
         self.discord_username = os.environ.get("DISCORD_USERNAME", "Reclaimarr").strip() or "Reclaimarr"
         # Post a short "Reclaimarr Online" notice each time the app starts.
